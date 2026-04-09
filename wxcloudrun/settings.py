@@ -192,9 +192,9 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 LOGS_DIR = '/data/logs/'
 
 # AI 推荐接口配置
-OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', '')
-OPENAI_BASE_URL = os.environ.get('OPENAI_BASE_URL', 'https://api.openai.com/v1')
-OPENAI_MODEL = os.environ.get('OPENAI_MODEL', 'gpt-4o-mini')
+OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', 'sk-a3933f52b50d4629b9df0dfd3a99e133')
+OPENAI_BASE_URL = os.environ.get('OPENAI_BASE_URL', 'https://dashscope.aliyuncs.com/compatible-mode/v1')
+OPENAI_MODEL = os.environ.get('OPENAI_MODEL', 'qwen-plus-3.6')
 OPENAI_TIMEOUT_SECONDS = int(os.environ.get('OPENAI_TIMEOUT_SECONDS', '15'))
 
 # 内部任务接口鉴权（为空时不校验）
