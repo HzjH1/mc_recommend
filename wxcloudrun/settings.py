@@ -171,7 +171,7 @@ LOGGING = {
 
 LANGUAGE_CODE = 'en-us'
 
-TIME_ZONE = 'UTC'
+TIME_ZONE = 'Asia/Shanghai'
 
 USE_I18N = True
 
@@ -190,3 +190,14 @@ STATIC_URL = '/static/'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 LOGS_DIR = '/data/logs/'
+
+# AI 推荐接口配置
+OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', '')
+OPENAI_BASE_URL = os.environ.get('OPENAI_BASE_URL', 'https://api.openai.com/v1')
+OPENAI_MODEL = os.environ.get('OPENAI_MODEL', 'gpt-4o-mini')
+OPENAI_TIMEOUT_SECONDS = int(os.environ.get('OPENAI_TIMEOUT_SECONDS', '15'))
+
+# 内部任务接口鉴权（为空时不校验）
+INTERNAL_JOB_TOKEN = os.environ.get('INTERNAL_JOB_TOKEN', '')
+AUTO_ORDER_LUNCH_DEADLINE = os.environ.get('AUTO_ORDER_LUNCH_DEADLINE', '10:30')
+AUTO_ORDER_DINNER_DEADLINE = os.environ.get('AUTO_ORDER_DINNER_DEADLINE', '16:30')

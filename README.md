@@ -112,6 +112,85 @@ curl https://<云托管服务域名>/api/count
 curl -X POST -H 'content-type: application/json' -d '{"action": "inc"}' https://<云托管服务域名>/api/count
 ```
 
+### `POST /api/recommend`
+
+根据用户饮食偏好和菜单列表，返回 AI 推荐的 Top3 菜品。
+
+#### 请求参数
+
+- `personalPreference`：`object`，用户偏好
+  - 支持字段（中英文都可）：
+    - 是否吃辣 / `isSpicy`
+    - 是否清真 / `isHalal`
+    - 是否正在减脂 / `isLosingFat`
+    - 喜欢吃粉面 / `preferNoodle`
+    - 喜欢吃饭 / `preferRice`
+    - 其他补充 / `other`
+- `menuList`：`array`，菜品列表
+  - 兼容直接传 `othersRegularDishList`
+
+##### 请求参数示例
+
+```json
+{
+  "personalPreference": {
+    "是否吃辣": "否",
+    "是否清真": "否",
+    "是否正在减脂": "是",
+    "喜欢吃粉面": "是",
+    "喜欢吃饭": "否",
+    "其他补充": "我不能吃葱，喜欢吃香菜"
+  },
+  "menuList": [
+    {
+      "id": 308630423,
+      "name": "新鲜瘦肉汤米粉(中融专供)",
+      "restaurant": {
+        "name": "潮品鲜(荷光路店)",
+        "available": true
+      }
+    }
+  ]
+}
+```
+
+#### 响应结果
+
+- `code`：错误码，`0` 为成功
+- `data`：推荐结果数组（最多 3 条）
+  - `id`：菜品 ID
+  - `name`：菜名
+  - `restaurant`：商家信息
+  - `score`：规则评分（用于兜底排序）
+  - `reason`：推荐理由
+
+##### 响应结果示例
+
+```json
+{
+  "code": 0,
+  "data": [
+    {
+      "id": 308630423,
+      "name": "新鲜瘦肉汤米粉(中融专供)",
+      "restaurant": {
+        "name": "潮品鲜(荷光路店)",
+        "available": true
+      },
+      "score": 4,
+      "reason": "减脂期优先清淡高蛋白；主食偏好粉面"
+    }
+  ]
+}
+```
+
+#### 环境变量
+
+- `OPENAI_API_KEY`：必填，AI 服务密钥
+- `OPENAI_BASE_URL`：可选，默认 `https://api.openai.com/v1`
+- `OPENAI_MODEL`：可选，默认 `gpt-4o-mini`
+- `OPENAI_TIMEOUT_SECONDS`：可选，请求超时秒数，默认 `15`
+
 ## 使用注意
 如果不是通过微信云托管控制台部署模板代码，而是自行复制/下载模板代码后，手动新建一个服务并部署，需要在「服务设置」中补全以下环境变量，才可正常使用，否则会引发无法连接数据库，进而导致部署失败。
 - MYSQL_ADDRESS
