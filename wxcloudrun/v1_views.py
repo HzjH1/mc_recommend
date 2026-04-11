@@ -9,7 +9,13 @@ from django.db.models import Max, Q
 from django.http import JsonResponse
 from django.utils import timezone
 
-from wxcloudrun.meican_oauth import MeicanOAuthError, ensure_valid_access_token, iter_user_ids_due_for_refresh, refresh_user_meican_token_locked
+from wxcloudrun.meican_oauth import (
+    MeicanOAuthError,
+    ensure_valid_access_token,
+    get_meican_oauth_client_id,
+    iter_user_ids_due_for_refresh,
+    refresh_user_meican_token_locked,
+)
 from wxcloudrun.recommendation_engine import rank_menu_items_for_user
 from wxcloudrun.models import (
     AutoOrderConfig,
@@ -782,6 +788,7 @@ def get_user_meican_access(request, user_id):
             'tokenType': 'bearer',
             'tokenExpireAt': exp,
             'accountNamespace': str(account.account_namespace or '').strip(),
+            'meicanOAuthClientId': get_meican_oauth_client_id(),
         }
     )
 

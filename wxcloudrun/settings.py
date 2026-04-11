@@ -202,7 +202,7 @@ INTERNAL_JOB_TOKEN = os.environ.get('INTERNAL_JOB_TOKEN', '')
 AUTO_ORDER_LUNCH_DEADLINE = os.environ.get('AUTO_ORDER_LUNCH_DEADLINE', '10:30')
 AUTO_ORDER_DINNER_DEADLINE = os.environ.get('AUTO_ORDER_DINNER_DEADLINE', '16:30')
 
-# 美餐 OAuth（与小程序 forward 使用同一对 client_id / client_secret）
+# 美餐 OAuth（须与小程序 config.meicanForwardClientId / meicanForwardClientSecret 完全一致，否则 refresh 得到的 access 在 forward 上会 401）
 MEICAN_CLIENT_ID = os.environ.get('MEICAN_CLIENT_ID', '')
 MEICAN_CLIENT_SECRET = os.environ.get('MEICAN_CLIENT_SECRET', '')
 # 距 access 过期前多少秒即视为需要刷新（主动任务 / ensure）

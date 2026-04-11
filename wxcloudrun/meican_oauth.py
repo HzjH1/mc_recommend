@@ -33,6 +33,12 @@ def _client_config():
     return cid, csec
 
 
+def get_meican_oauth_client_id():
+    """供 /meican/access 回传，便于小程序与本地 forward 的 client_id 比对。"""
+    cid, _ = _client_config()
+    return cid
+
+
 def _pick_token_field(payload, *keys):
     cur = payload
     for key in keys:
