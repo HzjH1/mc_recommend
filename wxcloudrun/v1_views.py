@@ -712,7 +712,15 @@ def put_user_meican_session(request, user_id):
         expires_in = None
 
     email = str(body.get('meicanEmail') or body.get('meican_email') or '').strip()
-    namespace = str(body.get('accountNamespace') or body.get('account_namespace') or '').strip()
+    namespace = str(
+        body.get('accountNamespace')
+        or body.get('account_namespace')
+        or body.get('namespace')
+        or body.get('corpNamespace')
+        or body.get('corp_namespace')
+        or body.get('selectedCorpNamespace')
+        or ''
+    ).strip()
 
     ttl = expires_in if isinstance(expires_in, int) and expires_in > 0 else int(
         getattr(settings, 'MEICAN_TOKEN_DEFAULT_TTL_SECONDS', 3600) or 3600
@@ -732,7 +740,15 @@ def put_user_meican_session(request, user_id):
             'is_bound': 1,
         },
     )
-    return _resp(data={'userId': user.id, 'meicanAccountId': obj.id, 'tokenExpireAt': token_expire_at.isoformat()})
+    return _resp(
+        data={
+            'userId': user.id,
+            'meicanAccountId': obj.id,
+            'tokenExpireAt': token_expire_at.isoformat(),
+            'accountNamespace': obj.account_namespace,
+            'isBound': obj.is_bound,
+        }
+    )
 
 
 def post_internal_meican_ensure_token(request, user_id):
