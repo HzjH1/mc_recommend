@@ -133,26 +133,6 @@ def _normalize_slot_key(key):
     return aliases.get(val)
 
 
-def _mask_username(username: str) -> str:
-    s = str(username or '').strip()
-    if not s:
-        return ''
-    if len(s) <= 2:
-        return s[0] + '*'
-    if len(s) <= 4:
-        return s[0] + ('*' * (len(s) - 2)) + s[-1]
-    return s[:2] + ('*' * (len(s) - 4)) + s[-2:]
-
-
-def _mask_email(email: str) -> str:
-    s = str(email or '').strip()
-    if not s or '@' not in s:
-        return _mask_username(s)
-    local, domain = s.split('@', 1)
-    masked_local = _mask_username(local)
-    return f'{masked_local}@{domain}'
-
-
 def _resolve_recommendation_batch(user, date_val, meal_slot, namespace: str):
     ns = namespace or ''
     lead = (
@@ -761,17 +741,7 @@ def put_user_meican_session(request, user_id):
         expires_in = None
 
     email = str(body.get('meicanEmail') or body.get('meican_email') or '').strip()
-    namespace = str(
-        body.get('accountNamespace')
-        or body.get('account_namespace')
-        or body.get('namespace')
-        or body.get('corpNamespace')
-        or body.get('corp_namespace')
-        or body.get('selectedCorpNamespace')
-        or ''
-    ).strip()
-    masked_username = _mask_username(username)
-    masked_email = _mask_email(email)
+    namespace = str(body.get('accountNamespace') or body.get('account_namespace') or '').strip()
 
     ttl = expires_in if isinstance(expires_in, int) and expires_in > 0 else int(
         getattr(settings, 'MEICAN_TOKEN_DEFAULT_TTL_SECONDS', 3600) or 3600
@@ -782,8 +752,8 @@ def put_user_meican_session(request, user_id):
     obj, _ = UserMeicanAccount.objects.update_or_create(
         user=user,
         defaults={
-            'meican_username': masked_username,
-            'meican_email': masked_email,
+            'meican_username': username,
+            'meican_email': email,
             'access_token': access,
             'refresh_token': refresh,
             'token_expire_at': token_expire_at,
@@ -791,15 +761,27 @@ def put_user_meican_session(request, user_id):
             'is_bound': 1,
         },
     )
+    return _resp(data={'userId': user.id, 'meicanAccountId': obj.id, 'tokenExpireAt': token_expire_at.isoformat()})
+
+
+def get_user_meican_access(request, user_id):
+    """
+    小程序调用美餐 forward 前拉取服务端已换票的有效 access（响应不含 refresh_token）。
+    依赖定时任务 / internal refresh 保持 refresh 有效，降低 invalid_grant。
+    """
+    if request.method != 'GET':
+        return _resp(code=40500, message='请求方式错误，请使用GET')
+    try:
+        account, _ = ensure_valid_access_token(int(user_id))
+    except MeicanOAuthError as exc:
+        return _meican_oauth_error_response(exc)
+    exp = account.token_expire_at.isoformat() if account.token_expire_at else None
     return _resp(
         data={
-            'userId': user.id,
-            'meicanAccountId': obj.id,
-            'tokenExpireAt': token_expire_at.isoformat(),
-            'meicanUsername': obj.meican_username,
-            'meicanEmail': obj.meican_email,
-            'accountNamespace': obj.account_namespace,
-            'isBound': obj.is_bound,
+            'accessToken': account.access_token,
+            'tokenType': 'bearer',
+            'tokenExpireAt': exp,
+            'accountNamespace': str(account.account_namespace or '').strip(),
         }
     )
 

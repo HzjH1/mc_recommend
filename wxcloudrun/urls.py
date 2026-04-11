@@ -40,6 +40,7 @@ urlpatterns = (
     url(r'^^api/v1/internal/jobs/auto-order/(?P<job_id>\d+)(/)?$', v1_views.get_internal_auto_order_job),
     # V1-美餐会话同步（小程序登录后上报，供云端任务换票）
     url(r'^^api/v1/users/(?P<user_id>\d+)/meican-session(/)?$', v1_views.put_user_meican_session),
+    url(r'^^api/v1/users/(?P<user_id>\d+)/meican/access(/)?$', v1_views.get_user_meican_access),
     # V1-内部：单用户 ensure / 强制 refresh
     url(r'^^api/v1/internal/meican/users/(?P<user_id>\d+)/ensure-token(/)?$', v1_views.post_internal_meican_ensure_token),
     # V1-内部：批量主动刷新临近过期的 token
