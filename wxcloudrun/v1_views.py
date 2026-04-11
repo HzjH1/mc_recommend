@@ -150,6 +150,35 @@ def _resolve_recommendation_batch(user, date_val, meal_slot, namespace: str):
     return lead.batch if lead else None
 
 
+def _parse_staple_from_body(body):
+    """
+    主食多选：fen/mian/rice/burger 可多选；none 表示「都不是」须独占。
+    兼容旧版单值 rice、noodle（noodle 映射为 mian）。
+    """
+    raw = body.get('staple')
+    if isinstance(raw, list):
+        parts = [str(x).strip().lower() for x in raw if f'{x}'.strip()]
+    else:
+        parts = [x.strip().lower() for x in str(raw or '').split(',') if x.strip()]
+    allowed = {'fen', 'mian', 'rice', 'burger', 'none', 'noodle'}
+    normalized = []
+    for p in parts:
+        if p not in allowed:
+            return None, f'不支持的staple标签:{p}'
+        if p == 'noodle':
+            p = 'mian'
+        normalized.append(p)
+    if 'none' in normalized:
+        return 'none', None
+    out = []
+    for p in normalized:
+        if p not in out:
+            out.append(p)
+    if not out:
+        return None, 'staple不能为空'
+    return ','.join(out), None
+
+
 def put_user_preferences(request, user_id):
     if request.method != 'PUT':
         return _resp(code=40500, message='请求方式错误，请使用PUT')
@@ -158,9 +187,9 @@ def put_user_preferences(request, user_id):
     if err:
         return err
 
-    staple = str(body.get('staple') or '').lower()
-    if staple and staple not in {'rice', 'noodle'}:
-        return _resp(code=40002, message='staple仅支持rice/noodle')
+    staple, s_err = _parse_staple_from_body(body)
+    if s_err:
+        return _resp(code=40002, message=s_err)
 
     user = _ensure_user(user_id)
     obj, _ = UserPreference.objects.update_or_create(
@@ -169,7 +198,7 @@ def put_user_preferences(request, user_id):
             'prefers_spicy': 1 if body.get('prefersSpicy') else 0,
             'is_halal': 1 if body.get('isHalal') else 0,
             'is_cutting': 1 if body.get('isCutting') else 0,
-            'staple': staple,
+            'staple': staple or '',
             'taboo': str(body.get('taboo') or ''),
             'price_min': body.get('priceMin'),
             'price_max': body.get('priceMax'),
@@ -712,15 +741,7 @@ def put_user_meican_session(request, user_id):
         expires_in = None
 
     email = str(body.get('meicanEmail') or body.get('meican_email') or '').strip()
-    namespace = str(
-        body.get('accountNamespace')
-        or body.get('account_namespace')
-        or body.get('namespace')
-        or body.get('corpNamespace')
-        or body.get('corp_namespace')
-        or body.get('selectedCorpNamespace')
-        or ''
-    ).strip()
+    namespace = str(body.get('accountNamespace') or body.get('account_namespace') or '').strip()
 
     ttl = expires_in if isinstance(expires_in, int) and expires_in > 0 else int(
         getattr(settings, 'MEICAN_TOKEN_DEFAULT_TTL_SECONDS', 3600) or 3600
@@ -740,15 +761,7 @@ def put_user_meican_session(request, user_id):
             'is_bound': 1,
         },
     )
-    return _resp(
-        data={
-            'userId': user.id,
-            'meicanAccountId': obj.id,
-            'tokenExpireAt': token_expire_at.isoformat(),
-            'accountNamespace': obj.account_namespace,
-            'isBound': obj.is_bound,
-        }
-    )
+    return _resp(data={'userId': user.id, 'meicanAccountId': obj.id, 'tokenExpireAt': token_expire_at.isoformat()})
 
 
 def post_internal_meican_ensure_token(request, user_id):

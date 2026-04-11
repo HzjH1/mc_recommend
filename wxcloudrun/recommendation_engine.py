@@ -1,14 +1,41 @@
 """
 基于用户偏好对菜单项打分（与 wxcloudrun.views._score_menu_items 规则一致），用于 V1 入库推荐。
+主食 staple 存逗号分隔：fen,mian,rice,burger 或 none。
 """
 import re
 from typing import Any, Dict, List, Optional
 
 from wxcloudrun.models import UserPreference
 
+_STAPLE_ALLOWED = {'fen', 'mian', 'rice', 'burger', 'none', 'noodle'}
+
 
 def _contains_any(text: str, keywords: List[str]) -> bool:
     return any(keyword in text for keyword in keywords)
+
+
+def _parse_staple_tokens(staple_raw: str) -> List[str]:
+    s = (staple_raw or '').lower().strip()
+    if not s:
+        return []
+    parts = [x.strip() for x in s.split(',') if x.strip()]
+    out = []
+    for p in parts:
+        p = p.lower()
+        if p not in _STAPLE_ALLOWED:
+            continue
+        if p == 'noodle':
+            p = 'mian'
+        out.append(p)
+    if 'none' in out:
+        return ['none']
+    seen = set()
+    ordered = []
+    for p in out:
+        if p not in seen:
+            seen.add(p)
+            ordered.append(p)
+    return ordered
 
 
 def user_preference_to_dict(pref: Optional[UserPreference]) -> Dict[str, Any]:
@@ -17,17 +44,24 @@ def user_preference_to_dict(pref: Optional[UserPreference]) -> Dict[str, Any]:
             'spicy': None,
             'halal': False,
             'losing_fat': False,
-            'prefer_noodle': False,
+            'prefer_fen': False,
+            'prefer_mian': False,
             'prefer_rice': False,
+            'prefer_burger': False,
+            'staple_none': False,
             'extra': '',
         }
-    staple = (pref.staple or '').lower()
+    tokens = _parse_staple_tokens(str(pref.staple or ''))
+    none_only = tokens == ['none'] or not tokens
     return {
         'spicy': bool(pref.prefers_spicy),
         'halal': bool(pref.is_halal),
         'losing_fat': bool(pref.is_cutting),
-        'prefer_noodle': staple == 'noodle',
-        'prefer_rice': staple != 'noodle',
+        'prefer_fen': 'fen' in tokens,
+        'prefer_mian': 'mian' in tokens,
+        'prefer_rice': 'rice' in tokens,
+        'prefer_burger': 'burger' in tokens,
+        'staple_none': none_only,
         'extra': str(pref.taboo or ''),
     }
 
@@ -64,12 +98,19 @@ def score_menu_items(pref: Dict[str, Any], menu_items: List[Dict[str, Any]]) -> 
                 score -= 2
                 reasons.append('减脂期降低高油高糖菜品权重')
 
-        if pref.get('prefer_noodle') is True and _contains_any(name, ['粉', '面', '米粉']):
-            score += 2
-            reasons.append('主食偏好粉面')
-        if pref.get('prefer_rice') is True and '饭' in name:
-            score += 2
-            reasons.append('主食偏好米饭')
+        if not pref.get('staple_none'):
+            if pref.get('prefer_fen') is True and _contains_any(name, ['粉', '米粉', '米线', '河粉', '粉丝']):
+                score += 2
+                reasons.append('主食偏好粉类')
+            if pref.get('prefer_mian') is True and _contains_any(name, ['面', '面条', '拉面', '刀削', '拌面', '炒面', '乌冬']):
+                score += 2
+                reasons.append('主食偏好面食')
+            if pref.get('prefer_rice') is True and '饭' in name:
+                score += 2
+                reasons.append('主食偏好米饭')
+            if pref.get('prefer_burger') is True and _contains_any(name, ['堡', '汉', '披萨', '卷', '薯条', '炸鸡']):
+                score += 2
+                reasons.append('主食偏好汉堡/西式')
 
         if avoid_onion and '葱' in name:
             score -= 5

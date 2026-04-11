@@ -13,7 +13,7 @@
 
 ## 已落地接口
 
-- `PUT /api/v1/users/{userId}/preferences`
+- `PUT /api/v1/users/{userId}/preferences`（`staple`：逗号分隔 `fen|mian|rice|burger` 多选，或单独 `none`；兼容旧值 `rice`/`noodle`，`noodle` 视为 `mian`）
 - `PUT /api/v1/users/{userId}/auto-order-config`
 - `GET /api/v1/users/{userId}/recommendations/daily?date=YYYY-MM-DD`
 - `POST /api/v1/users/{userId}/orders`

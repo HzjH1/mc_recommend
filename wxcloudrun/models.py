@@ -79,7 +79,7 @@ class UserPreference(models.Model):
     prefers_spicy = models.SmallIntegerField(default=0)
     is_halal = models.SmallIntegerField(default=0)
     is_cutting = models.SmallIntegerField(default=0)
-    staple = models.CharField(max_length=16, blank=True, default='')
+    staple = models.CharField(max_length=128, blank=True, default='')
     taboo = models.CharField(max_length=512, blank=True, default='')
     price_min = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     price_max = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
