@@ -133,6 +133,26 @@ def _normalize_slot_key(key):
     return aliases.get(val)
 
 
+def _mask_username(username: str) -> str:
+    s = str(username or '').strip()
+    if not s:
+        return ''
+    if len(s) <= 2:
+        return s[0] + '*'
+    if len(s) <= 4:
+        return s[0] + ('*' * (len(s) - 2)) + s[-1]
+    return s[:2] + ('*' * (len(s) - 4)) + s[-2:]
+
+
+def _mask_email(email: str) -> str:
+    s = str(email or '').strip()
+    if not s or '@' not in s:
+        return _mask_username(s)
+    local, domain = s.split('@', 1)
+    masked_local = _mask_username(local)
+    return f'{masked_local}@{domain}'
+
+
 def _resolve_recommendation_batch(user, date_val, meal_slot, namespace: str):
     ns = namespace or ''
     lead = (
@@ -741,7 +761,17 @@ def put_user_meican_session(request, user_id):
         expires_in = None
 
     email = str(body.get('meicanEmail') or body.get('meican_email') or '').strip()
-    namespace = str(body.get('accountNamespace') or body.get('account_namespace') or '').strip()
+    namespace = str(
+        body.get('accountNamespace')
+        or body.get('account_namespace')
+        or body.get('namespace')
+        or body.get('corpNamespace')
+        or body.get('corp_namespace')
+        or body.get('selectedCorpNamespace')
+        or ''
+    ).strip()
+    masked_username = _mask_username(username)
+    masked_email = _mask_email(email)
 
     ttl = expires_in if isinstance(expires_in, int) and expires_in > 0 else int(
         getattr(settings, 'MEICAN_TOKEN_DEFAULT_TTL_SECONDS', 3600) or 3600
@@ -752,8 +782,8 @@ def put_user_meican_session(request, user_id):
     obj, _ = UserMeicanAccount.objects.update_or_create(
         user=user,
         defaults={
-            'meican_username': username,
-            'meican_email': email,
+            'meican_username': masked_username,
+            'meican_email': masked_email,
             'access_token': access,
             'refresh_token': refresh,
             'token_expire_at': token_expire_at,
@@ -761,7 +791,17 @@ def put_user_meican_session(request, user_id):
             'is_bound': 1,
         },
     )
-    return _resp(data={'userId': user.id, 'meicanAccountId': obj.id, 'tokenExpireAt': token_expire_at.isoformat()})
+    return _resp(
+        data={
+            'userId': user.id,
+            'meicanAccountId': obj.id,
+            'tokenExpireAt': token_expire_at.isoformat(),
+            'meicanUsername': obj.meican_username,
+            'meicanEmail': obj.meican_email,
+            'accountNamespace': obj.account_namespace,
+            'isBound': obj.is_bound,
+        }
+    )
 
 
 def post_internal_meican_ensure_token(request, user_id):
