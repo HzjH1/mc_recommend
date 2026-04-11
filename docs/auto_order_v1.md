@@ -20,6 +20,7 @@
 - `POST /api/v1/internal/jobs/auto-order/run`
 - `GET /api/v1/internal/jobs/auto-order/{jobId}`
 - `PUT /api/v1/users/{userId}/meican-session`（小程序登录后同步 token，供云端主动换票）
+- `GET /api/v1/users/{userId}/meican/access`（小程序发美餐前拉取服务端已换票的 access，不含 refresh）
 - `POST /api/v1/internal/meican/users/{userId}/ensure-token`（内部：按需或强制 refresh）
 - `POST /api/v1/internal/meican/tokens/refresh-due`（内部：批量刷新临近过期 token，供定时任务）
 - `POST /api/v1/users/{userId}/sync/meican-week`（上报本周工作日各餐期菜单，服务端落库并生成推荐）
@@ -76,12 +77,47 @@
 
 ## 美餐 token 主动刷新（与小程序对齐）
 
+### 生命周期（GraphQL 登录 access ≈ 3600s）
+
+- 用户通过 `https://gateway.meican.com/graphql?op=LoginByAuthWay`（及后续 `ChooseAccountLogin`）拿到 **access + refresh**；access 典型 **约 3600 秒** 过期。
+- 小程序登录成功后会 **`PUT /api/v1/users/{userId}/meican-session`**，把双 token 与可选的 **`expiresIn`**（秒）写入 `user_meican_account`，服务端据此计算 `token_expire_at`。
+- **远端必须在 access 过期前** 调用美餐 **`POST https://www.meican.com/forward/api/v2.1/oauth/token`**（`grant_type=refresh_token`），用库里 `refresh_token` 换新 access；实现上由本服务的 `ensure_valid_access_token` / `call_meican_refresh_token` 完成，与小程序 `refreshMeicanToken` 对齐。
+
+### 定时任务（必配）
+
+在 **3600s 周期内至少执行一次** 批量换票，否则服务端存库 access 可能过期，自动点餐 / `GET .../meican/access` 会失败。
+
+推荐 **每 5～10 分钟** 触发一次（短于默认 `MEICAN_TOKEN_REFRESH_SKEW_SECONDS=300` 的「临期」窗口，才能稳定扫到即将过期的用户）：
+
+**方式 A：HTTP（云函数 / 外部 cron）**
+
+```bash
+curl -sS -X POST "https://<你的服务域名>/api/v1/internal/meican/tokens/refresh-due" \
+  -H "Content-Type: application/json" \
+  -H "X-Internal-Token: <与 INTERNAL_JOB_TOKEN 一致>" \
+  -d '{"limit":100}'
+```
+
+若 cron 间隔只能做到 **15～30 分钟**，请把请求体里的 **`withinSeconds` 加大**（例如 `1800`），让「即将过期」判定窗口覆盖更大区间，避免漏刷：
+
+```json
+{ "withinSeconds": 1800, "limit": 100 }
+```
+
+**方式 B：Django 管理命令（与 refresh-due 同逻辑）**
+
+```bash
+cd mc_recommend/mc_recommend
+python manage.py refresh_meican_tokens_due --limit=100
+# 可选：python manage.py refresh_meican_tokens_due --within-seconds=1800 --limit=200
+```
+
 环境变量（与小程序里 forward 的 `client_id` / `client_secret` 一致）：
 
 - `MEICAN_CLIENT_ID`
 - `MEICAN_CLIENT_SECRET`
 - `MEICAN_TOKEN_REFRESH_SKEW_SECONDS`（默认 `300`：距过期前多少秒即视为需刷新）
-- `MEICAN_TOKEN_DEFAULT_TTL_SECONDS`（默认 `3600`：oauth 未返回 `expires_in` 时写入 `token_expire_at` 的兜底秒数）
+- `MEICAN_TOKEN_DEFAULT_TTL_SECONDS`（默认 `3600`：oauth 未返回 `expires_in` 时写入 `token_expire_at` 的兜底秒数；与 GraphQL access 常见 TTL 对齐）
 
 ### `PUT /api/v1/users/{userId}/meican-session`
 
