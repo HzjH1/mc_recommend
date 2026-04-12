@@ -317,7 +317,14 @@ def post_user_menu_week_sync(request, user_id):
             'namespace': namespace,
             'slotsSynced': out['slots_synced'],
             'errors': out['errors'][:50],
-            'hint': '同步完成后可执行: python3 manage.py refresh_user_recommendations --user-id ... --date ... --namespace ...',
+            'menuItemsCreated': out.get('menuItemsCreated', 0),
+            'menuItemsUpdated': out.get('menuItemsUpdated', 0),
+            'menuItemsRemoved': out.get('menuItemsRemoved', 0),
+            'hint': (
+                '同一 snapshot 下 dish_id 未变的菜品会原地更新（保留 menu_item 主键），一般不再级联删掉 recommendation_result；'
+                '本次 payload 中已消失的 dish_id 仍会删除对应 menu_item（其推荐行会随级联删除）。'
+                '若菜单结构大变，仍建议重跑 refresh_user_recommendations。'
+            ),
         }
     )
 

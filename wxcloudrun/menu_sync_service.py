@@ -113,11 +113,15 @@ def normalize_days_payload(body):
 
 def sync_menu_days(namespace: str, days: list):
     """
-    写入菜单快照。返回 dict: slots_synced, errors(list)。
+    写入菜单快照。返回 dict: slots_synced, errors(list), menuItemsCreated/Updated/Removed（可选统计）。
+
+    同一 snapshot 下若 dish_id 仍存在，则原地更新该行（保留主键），避免级联删除 recommendation_result；
+    仅删除本次 payload 中不再出现的 dish_id。
     """
     ns = (namespace or '').strip()
     slots_synced = 0
     errors = []
+    stats = {'menuItemsCreated': 0, 'menuItemsUpdated': 0, 'menuItemsRemoved': 0}
 
     for day in days:
         if not isinstance(day, dict):
@@ -141,6 +145,24 @@ def sync_menu_days(namespace: str, days: list):
             tgt = str(slot_body.get('targetTime') or '')
             tt = _parse_target_time(tgt) if tgt else None
 
+            parsed_rows = []
+            for d in dishes:
+                row = _dish_row_to_menu_item_fields(d)
+                if not row:
+                    continue
+                raw = row['raw_json']
+                raw.setdefault('tabUniqueId', tab_uid)
+                raw.setdefault('targetTime', tgt)
+                raw.setdefault('corpNamespace', str(raw.get('corpNamespace') or ns))
+                row['raw_json'] = raw
+                parsed_rows.append(row)
+            by_dish_id = {}
+            for row in parsed_rows:
+                by_dish_id[row['dish_id']] = row
+            if not by_dish_id:
+                errors.append({'date': str(date_val), 'mealSlot': meal_slot, 'error': '无有效菜品字段'})
+                continue
+
             with transaction.atomic():
                 snapshot, _ = MenuSnapshot.objects.update_or_create(
                     namespace=ns,
@@ -152,35 +174,61 @@ def sync_menu_days(namespace: str, days: list):
                         'source': 'meican',
                     },
                 )
-                MenuItem.objects.filter(snapshot=snapshot).delete()
-                bulk = []
-                for d in dishes:
-                    row = _dish_row_to_menu_item_fields(d)
-                    if not row:
-                        continue
-                    raw = row['raw_json']
-                    raw.setdefault('tabUniqueId', tab_uid)
-                    raw.setdefault('targetTime', tgt)
-                    raw.setdefault('corpNamespace', str(raw.get('corpNamespace') or ns))
-                    bulk.append(
-                        MenuItem(
-                            snapshot=snapshot,
-                            dish_id=row['dish_id'],
-                            dish_name=row['dish_name'],
-                            restaurant_id=row['restaurant_id'],
-                            restaurant_name=row['restaurant_name'],
-                            price_cent=row['price_cent'],
-                            status=row['status'],
-                            raw_json=raw,
-                        )
-                    )
-                if bulk:
-                    MenuItem.objects.bulk_create(bulk)
-                    slots_synced += 1
-                else:
-                    errors.append({'date': str(date_val), 'mealSlot': meal_slot, 'error': '无有效菜品字段'})
+                existing = {}
+                duplicate_pks = []
+                for m in MenuItem.objects.filter(snapshot=snapshot).order_by('id'):
+                    if m.dish_id in existing:
+                        duplicate_pks.append(m.pk)
+                    else:
+                        existing[m.dish_id] = m
+                if duplicate_pks:
+                    stats['menuItemsRemoved'] += len(duplicate_pks)
+                    MenuItem.objects.filter(pk__in=duplicate_pks).delete()
+                wanted = set(by_dish_id.keys())
 
-    return {'slots_synced': slots_synced, 'errors': errors, 'fatal': False}
+                removed_qs = MenuItem.objects.filter(snapshot=snapshot).exclude(dish_id__in=wanted)
+                stats['menuItemsRemoved'] += removed_qs.count()
+                removed_qs.delete()
+
+                to_create = []
+                to_update = []
+                for dish_id, row in by_dish_id.items():
+                    if dish_id in existing:
+                        obj = existing[dish_id]
+                        obj.dish_name = row['dish_name']
+                        obj.restaurant_id = row['restaurant_id']
+                        obj.restaurant_name = row['restaurant_name']
+                        obj.price_cent = row['price_cent']
+                        obj.status = row['status']
+                        obj.raw_json = row['raw_json']
+                        to_update.append(obj)
+                    else:
+                        to_create.append(
+                            MenuItem(
+                                snapshot=snapshot,
+                                dish_id=row['dish_id'],
+                                dish_name=row['dish_name'],
+                                restaurant_id=row['restaurant_id'],
+                                restaurant_name=row['restaurant_name'],
+                                price_cent=row['price_cent'],
+                                status=row['status'],
+                                raw_json=row['raw_json'],
+                            )
+                        )
+                if to_create:
+                    MenuItem.objects.bulk_create(to_create)
+                    stats['menuItemsCreated'] += len(to_create)
+                if to_update:
+                    MenuItem.objects.bulk_update(
+                        to_update,
+                        ['dish_name', 'restaurant_id', 'restaurant_name', 'price_cent', 'status', 'raw_json'],
+                    )
+                    stats['menuItemsUpdated'] += len(to_update)
+                slots_synced += 1
+
+    out = {'slots_synced': slots_synced, 'errors': errors, 'fatal': False}
+    out.update(stats)
+    return out
 
 
 if __name__ == '__main__':
