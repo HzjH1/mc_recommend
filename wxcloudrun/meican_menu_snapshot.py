@@ -24,13 +24,13 @@ import django
 django.setup()
 
 import json
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone as dt_timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from django.utils import timezone
+from django.utils import timezone as django_timezone
 
 from wxcloudrun.meican_client_config import (
     meican_forward_credentials_configured,
@@ -43,6 +43,10 @@ from wxcloudrun.meican_client_config import (
 )
 from wxcloudrun.menu_sync_service import sync_menu_days
 from wxcloudrun.models import UserAccount, UserMeicanAccount
+
+# 美餐 targetTime 毫秒戳按中国时区格式化（云主机 TZ=UTC 时 naive fromtimestamp 会偏一天，导致档口/菜品全空）
+_CN_TZ = dt_timezone(timedelta(hours=8))
+
 
 def _forward_base() -> str:
     return resolve_forward_base_url()
@@ -155,7 +159,7 @@ def _refresh_meican_token(acc: UserMeicanAccount) -> bool:
         ttl = 3600
     if ttl <= 0:
         ttl = 3600
-    acc.token_expire_at = timezone.now() + timedelta(seconds=ttl)
+    acc.token_expire_at = django_timezone.now() + timedelta(seconds=ttl)
     acc.save(update_fields=['access_token', 'refresh_token', 'token_expire_at', 'updated_at'])
     return True
 
@@ -233,7 +237,7 @@ def _normalize_forward_target_time(item: Dict[str, Any], date_key: str, bucket: 
         try:
             n = float(raw)
             if n == n and n > 1e11:
-                return datetime.fromtimestamp(n / 1000.0).strftime('%Y-%m-%d %H:%M')
+                return datetime.fromtimestamp(n / 1000.0, tz=_CN_TZ).strftime('%Y-%m-%d %H:%M')
         except (TypeError, ValueError):
             pass
         s = str(raw).strip()
@@ -738,7 +742,34 @@ def sync_meican_menu_snapshot_for_user_dates(
             days_payload.append(day_obj)
 
     if not days_payload:
-        return {'ok': False, 'reason': '美餐返回无可用菜品（日历或档口为空）'}
+        hint: Dict[str, Any] = {
+            'datesQueried': day_list,
+            'note': '请确认 datesQueried 含小程序里有档口的日期；shell -c 须单行且 import sync_meican_menu_snapshot_for_user_dates 勿断行',
+        }
+        if day_list:
+            d0 = day_list[0]
+            cal0 = _json_request(
+                acc,
+                'GET',
+                '/api/v2.1/calendarItems/list',
+                {'withOrderDetail': 'false', 'beginDate': d0, 'endDate': d0},
+            )
+            hint['sampleDate'] = d0
+            hint['calendarIsDict'] = isinstance(cal0, dict)
+            if isinstance(cal0, dict):
+                hint['calendarTopKeys'] = sorted(cal0.keys())[:24]
+                dl = cal0.get('dateList')
+                hint['dateListLen'] = len(dl) if isinstance(dl, list) else 0
+                hint['calendarEntriesParsed'] = len(_extract_calendar_entries(cal0, default_date_key=d0))
+            if isinstance(cal0, dict) and cal0.get('_http_status'):
+                hint['calendarHttpStatus'] = cal0.get('_http_status')
+            if isinstance(cal0, dict) and cal0.get('_parse_error'):
+                hint['calendarJsonParseError'] = True
+        return {
+            'ok': False,
+            'reason': '美餐返回无可用菜品（日历或档口为空），详见 hint',
+            'hint': hint,
+        }
 
     out = sync_menu_days(ns, days_payload)
     return {
