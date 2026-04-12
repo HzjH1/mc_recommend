@@ -205,6 +205,17 @@ def _collect_matching(obj: Any, pred, out: List[Any], seen: Set[int]) -> None:
             _collect_matching(v, pred, out, seen)
 
 
+def _forward_dict_candidates(payload: Any) -> List[Dict[str, Any]]:
+    """美餐 Forward 常见 { data: {...} } 包裹；返回若干 dict 根供解析。"""
+    out: List[Dict[str, Any]] = []
+    if isinstance(payload, dict):
+        out.append(payload)
+        data = payload.get('data')
+        if isinstance(data, dict):
+            out.append(data)
+    return out
+
+
 def _infer_meal_bucket(item: Dict[str, Any]) -> str:
     src = (
         f'{_pick_first(item, ["tabName", "name", "title", "mealType", "categoryName"], "")}'
@@ -231,7 +242,32 @@ def _normalize_forward_target_time(item: Dict[str, Any], date_key: str, bucket: 
     return f'{base} 17:00' if bucket == 'afternoon' else f'{base} 10:00'
 
 
-def _extract_calendar_entries(payload: Any) -> List[Dict[str, Any]]:
+def _calendar_item_to_entry(item: Dict[str, Any], default_date_key: str) -> Optional[Dict[str, Any]]:
+    if not isinstance(item, dict):
+        return None
+    tt_raw = _pick_first(item, ['targetTime', 'startTime'], None)
+    if tt_raw is None or f'{tt_raw}'.strip() == '':
+        return None
+    tab_uid = _pick_first(item, ['tabUniqueId', 'tabUUID', 'userTab.uniqueId', 'userTab.tabUniqueId'], '')
+    if not str(tab_uid).strip():
+        ut = item.get('userTab')
+        if isinstance(ut, dict):
+            tab_uid = ut.get('uniqueId') or ut.get('tabUniqueId') or ut.get('id') or ''
+    if not str(tab_uid).strip():
+        return None
+    dk = _pick_first(item, ['operativeDate', 'date', 'targetDate'], default_date_key)
+    bucket = _infer_meal_bucket(item)
+    target_time = _normalize_forward_target_time(item, str(dk)[:10], bucket)
+    return {
+        'dateKey': str(dk)[:10],
+        'tabUniqueId': str(tab_uid).strip(),
+        'tabName': _pick_first(item, ['tabName', 'name', 'title'], ''),
+        'targetTime': target_time,
+        'bucket': bucket,
+    }
+
+
+def _extract_calendar_entries(payload: Any, default_date_key: str = '') -> List[Dict[str, Any]]:
     def pred(item: Dict[str, Any]) -> bool:
         if not isinstance(item, dict):
             return False
@@ -239,27 +275,45 @@ def _extract_calendar_entries(payload: Any) -> List[Dict[str, Any]]:
         if not has_target:
             return False
         tab_id = _pick_first(item, ['tabUniqueId', 'tabUUID', 'uniqueId', 'userTab.uniqueId'], '')
+        if not tab_id and isinstance(item.get('userTab'), dict):
+            tab_id = item['userTab'].get('uniqueId') or item['userTab'].get('tabUniqueId') or ''
         return bool(tab_id)
 
-    candidates: List[Any] = []
-    _collect_matching(payload, pred, candidates, set())
-    out = []
-    for item in candidates:
-        if not isinstance(item, dict):
-            continue
-        dk = _pick_first(item, ['operativeDate', 'date', 'targetDate'], datetime.now().strftime('%Y-%m-%d'))
-        bucket = _infer_meal_bucket(item)
-        tab_uid = _pick_first(item, ['tabUniqueId', 'tabUUID', 'uniqueId', 'userTab.uniqueId'], '')
-        target_time = _normalize_forward_target_time(item, str(dk), bucket)
-        out.append(
-            {
-                'dateKey': str(dk)[:10],
-                'tabUniqueId': str(tab_uid),
-                'tabName': _pick_first(item, ['tabName', 'name', 'title'], ''),
-                'targetTime': target_time,
-                'bucket': bucket,
-            }
-        )
+    dkey = (default_date_key or datetime.now().strftime('%Y-%m-%d'))[:10]
+    seen_keys: Set[str] = set()
+    out: List[Dict[str, Any]] = []
+
+    for root in _forward_dict_candidates(payload):
+        for arr_key in ('calendarItems', 'items', 'list', 'dayList', 'calendarItemList', 'calendar'):
+            arr = root.get(arr_key)
+            if not isinstance(arr, list):
+                continue
+            for item in arr:
+                ent = _calendar_item_to_entry(item, dkey) if isinstance(item, dict) else None
+                if not ent:
+                    continue
+                k = f'{ent["tabUniqueId"]}-{ent["targetTime"]}'
+                if k in seen_keys:
+                    continue
+                seen_keys.add(k)
+                out.append(ent)
+
+    if not out:
+        for root in _forward_dict_candidates(payload):
+            candidates: List[Any] = []
+            _collect_matching(root, pred, candidates, set())
+            for item in candidates:
+                if not isinstance(item, dict):
+                    continue
+                ent = _calendar_item_to_entry(item, dkey)
+                if not ent:
+                    continue
+                k = f'{ent["tabUniqueId"]}-{ent["targetTime"]}'
+                if k in seen_keys:
+                    continue
+                seen_keys.add(k)
+                out.append(ent)
+
     return out
 
 
@@ -345,31 +399,104 @@ def _extract_restaurants(payload: Any) -> List[Dict[str, Any]]:
 
 
 def _extract_recommended_dishes(payload: Any) -> List[Dict[str, Any]]:
+    """
+    recommendations/dishes 根级常为 othersRegularDishList / myRegularDishList（与小程序抓包一致），
+    不能仅靠深度扫描：内嵌 restaurant 会被误判成「菜」且真实列表易漏。
+    """
+    seen: Set[str] = set()
+    dishes: List[Dict[str, Any]] = []
+
+    for root in _forward_dict_candidates(payload):
+        for list_key in ('othersRegularDishList', 'myRegularDishList'):
+            lst = root.get(list_key)
+            if not isinstance(lst, list):
+                continue
+            for item in lst:
+                if not isinstance(item, dict) or item.get('isSection'):
+                    continue
+                did = item.get('dishId') if item.get('dishId') is not None else item.get('id')
+                if did is None:
+                    continue
+                sid = str(did).strip()
+                name = _pick_first(item, ['name', 'dishName', 'title'], '')
+                if not sid or not name:
+                    continue
+                dedupe = f'{sid}:{name}'
+                if dedupe in seen:
+                    continue
+                seen.add(dedupe)
+                pic = item.get('priceInCent')
+                if pic is None:
+                    pic = item.get('originalPriceInCent')
+                price_fmt = _format_price(pic) if pic is not None else _format_price(
+                    _pick_first(item, ['price', 'priceString', 'priceCent'], '')
+                )
+                pic_int = None
+                if pic is not None and f'{pic}'.strip() != '':
+                    try:
+                        pic_int = int(float(pic))
+                    except (TypeError, ValueError):
+                        pic_int = None
+                dishes.append(
+                    {
+                        'id': sid,
+                        'name': name,
+                        'price': price_fmt,
+                        'priceInCent': pic_int,
+                        'status': _pick_first(item, ['status', 'sellStatus'], 'available'),
+                        'restaurant': item.get('restaurant') if isinstance(item.get('restaurant'), dict) else {},
+                    }
+                )
+        if dishes:
+            return dishes
+
     def pred(item: Dict[str, Any]) -> bool:
-        if not isinstance(item, dict):
+        if not isinstance(item, dict) or item.get('isSection'):
             return False
-        did = (
-            item.get('dishId')
-            or item.get('id')
-            or item.get('revisionId')
-            or item.get('productId')
-            or item.get('uniqueId')
-        )
         name = item.get('name') or item.get('dishName') or item.get('title')
-        return bool(did and name)
+        if not name:
+            return False
+        if item.get('dishId') or item.get('revisionId'):
+            return True
+        if item.get('id') is not None and (
+            item.get('priceInCent') is not None
+            or item.get('originalPriceInCent') is not None
+            or item.get('priceString')
+        ):
+            return True
+        return False
 
     found: List[Any] = []
-    _collect_matching(payload, pred, found, set())
-    dishes = []
+    for root in _forward_dict_candidates(payload):
+        _collect_matching(root, pred, found, set())
     for dish in found:
         if not isinstance(dish, dict):
             continue
+        sid = str(_pick_first(dish, ['dishId', 'id', 'revisionId', 'productId'], '') or '').strip()
+        name = _pick_first(dish, ['dishName', 'name', 'title'], '')
+        if not sid or not name:
+            continue
+        dedupe = f'{sid}:{name}'
+        if dedupe in seen:
+            continue
+        seen.add(dedupe)
+        pic = dish.get('priceInCent') if dish.get('priceInCent') is not None else dish.get('originalPriceInCent')
+        pic_int = None
+        if pic is not None and f'{pic}'.strip() != '':
+            try:
+                pic_int = int(float(pic))
+            except (TypeError, ValueError):
+                pic_int = None
         dishes.append(
             {
-                'id': _pick_first(dish, ['dishId', 'id', 'revisionId', 'productId', 'uniqueId'], ''),
-                'name': _pick_first(dish, ['dishName', 'name', 'title'], ''),
-                'price': _format_price(_pick_first(dish, ['price', 'priceInCent', 'priceCent'], '')),
+                'id': sid,
+                'name': name,
+                'price': _format_price(pic) if pic is not None else _format_price(
+                    _pick_first(dish, ['price', 'priceString', 'priceCent'], '')
+                ),
+                'priceInCent': pic_int,
                 'status': _pick_first(dish, ['status', 'sellStatus'], 'available'),
+                'restaurant': dish.get('restaurant') if isinstance(dish.get('restaurant'), dict) else {},
             }
         )
     return dishes
@@ -412,14 +539,27 @@ def _build_sync_dishes_from_section(section: Dict[str, Any]) -> List[Dict[str, A
         dish_name = _pick_first(dish, ['name', 'dishName', 'title'], None)
         if not dish_id or not dish_name:
             continue
+        rest = dish.get('restaurant') if isinstance(dish.get('restaurant'), dict) else {}
+        rid = str(rest.get('uniqueId') or rest.get('id') or '').strip()[:64]
+        rname = str(rest.get('name') or '').strip()[:128]
+        pic = dish.get('priceInCent')
+        if pic is None:
+            pic = dish.get('originalPriceInCent')
+        if pic is not None:
+            try:
+                price_cent = int(pic)
+            except (TypeError, ValueError):
+                price_cent = _parse_price_cent(dish.get('price'))
+        else:
+            price_cent = _parse_price_cent(dish.get('price'))
         out.append(
             {
                 'dishId': dish_id,
                 'dishName': dish_name,
-                'priceInCent': _parse_price_cent(dish.get('price')),
+                'priceInCent': price_cent,
                 'status': dish.get('status') or 'available',
-                'restaurantId': '',
-                'restaurantName': '',
+                'restaurantId': rid,
+                'restaurantName': rname,
             }
         )
     return out
@@ -458,7 +598,7 @@ def _fetch_date_restaurant_menus(acc: UserMeicanAccount, date_key: str, language
         '/api/v2.1/calendarItems/list',
         {'withOrderDetail': 'false', 'beginDate': date_key, 'endDate': date_key},
     )
-    entries = _extract_calendar_entries(cal)
+    entries = _extract_calendar_entries(cal, default_date_key=date_key)
     unique: List[Dict[str, Any]] = []
     tab_map: Set[str] = set()
     for entry in entries:
