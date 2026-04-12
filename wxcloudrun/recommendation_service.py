@@ -23,6 +23,20 @@ from wxcloudrun.meican_menu_snapshot import sync_meican_menu_snapshot_for_user_d
 from wxcloudrun.recommendation_scoring import pref_dict_from_user_preference, rank_top_menu_items
 
 
+def _recommendation_refresh_hint(**extra):
+    """
+    refresh_user_recommendations / refresh_recommendations_for_user_slot 排查用：
+    本链路为规则打分，不调用 OpenAI；与 views.recommend_dishes 的 LLM 推荐分离。
+    """
+    h = {
+        'usesAiLlm': False,
+        'scoring': '规则引擎 wxcloudrun.recommendation_scoring（score_menu_item / rank_top_menu_items）',
+        'llmNote': '大模型仅用于 wxcloudrun.views.recommend_dishes（_call_ai_recommendation，依赖 OPENAI_*）；不落库到 recommendation_batch',
+    }
+    h.update({k: v for k, v in extra.items() if v is not None})
+    return h
+
+
 def refresh_recommendations_for_user_slot(
     user: UserAccount,
     namespace: str,
@@ -39,12 +53,16 @@ def refresh_recommendations_for_user_slot(
     当缺少该餐期的 menu_snapshot / menu_item 且 sync_menu_if_missing 为 True 时，
     会按用户美餐 session（须与 namespace 一致）调用美餐 Forward 拉单日菜单并 sync_menu_days。
     meican_menu_sync_attempted_dates 若传入，则每个自然日只尝试拉取一次（周任务内午/晚共用）。
-    成功返回 dict: {ok, batch_id, version, status, meal_slot, date}
-    跳过返回 dict: {ok: False, skip: reason}
+    成功返回 dict: {ok, batch_id, version, status, meal_slot, date, hint}
+    跳过返回 dict: {ok: False, skip, hint}；hint 说明打分不走大模型，便于与 recommend_dishes 区分。
     """
     ns = (namespace or '').strip()
     if not ns:
-        return {'ok': False, 'skip': 'namespace 为空'}
+        return {
+            'ok': False,
+            'skip': 'namespace 为空',
+            'hint': _recommendation_refresh_hint(detail='传入 --namespace 须与 menu_snapshot / 美餐 account_namespace 一致'),
+        }
 
     pref = UserPreference.objects.filter(user=user).first()
     pref_dict = pref_dict_from_user_preference(pref)
@@ -61,14 +79,37 @@ def refresh_recommendations_for_user_slot(
         has_items = bool(snap and MenuItem.objects.filter(snapshot=snap).exists())
 
     if not snap:
-        return {'ok': False, 'skip': f'无 menu_snapshot {day} {meal_slot}'}
+        return {
+            'ok': False,
+            'skip': f'无 menu_snapshot {day} {meal_slot}',
+            'hint': _recommendation_refresh_hint(
+                detail='库中无该日该餐期快照',
+                nextSteps='可先 meican 同步 / week-sync / import_menu_week_json；加 --no-meican-sync 则不会自动拉美餐',
+            ),
+        }
     if not has_items:
-        return {'ok': False, 'skip': f'snapshot {snap.id} 无 menu_item'}
+        return {
+            'ok': False,
+            'skip': f'snapshot {snap.id} 无 menu_item',
+            'hint': _recommendation_refresh_hint(
+                detail='快照存在但菜品表为空',
+                snapshotId=snap.id,
+                nextSteps='重新同步该日菜单或检查 sync_menu_days 是否写入失败',
+            ),
+        }
 
     menu_qs = MenuItem.objects.filter(snapshot=snap)
     ranked = rank_top_menu_items(pref_dict, menu_qs, top_n=max(1, int(top_n)))
     if not ranked:
-        return {'ok': False, 'skip': '无可用菜品参与打分'}
+        return {
+            'ok': False,
+            'skip': '无可用菜品参与打分',
+            'hint': _recommendation_refresh_hint(
+                detail='候选 menu_item 在规则里全部被过滤（常见：均为 sold_out/unavailable）',
+                snapshotId=snap.id,
+                candidateCount=menu_qs.count(),
+            ),
+        }
 
     status = RecommendationBatchStatus.FROZEN if freeze else RecommendationBatchStatus.READY
 
@@ -118,6 +159,12 @@ def refresh_recommendations_for_user_slot(
         'status': batch.status,
         'meal_slot': meal_slot,
         'date': str(day),
+        'hint': _recommendation_refresh_hint(
+            detail='已写入 recommendation_batch / recommendation_result',
+            snapshotId=snap.id,
+            rankedCount=len(ranked),
+            candidateCount=menu_qs.count(),
+        ),
     }
 
 
