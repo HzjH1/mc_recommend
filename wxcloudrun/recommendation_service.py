@@ -2,6 +2,7 @@
 推荐结果落库：按 menu_snapshot / menu_item 为单用户生成 recommendation_batch + recommendation_result。
 """
 from datetime import date, timedelta
+from typing import Optional
 
 from django.db import transaction
 from django.db.models import Max
@@ -105,7 +106,7 @@ def refresh_recommendations_for_user_slot(
     }
 
 
-def resolve_week_start_monday(today: date | None, week_start: date | None) -> date:
+def resolve_week_start_monday(today: Optional[date], week_start: Optional[date]) -> date:
     """
     未传 week_start 时：
     - 若今天是周日：视为「每周日任务」，生成「下周一」起的自然周工作日（由调用方取 5 天）。
@@ -121,11 +122,11 @@ def resolve_week_start_monday(today: date | None, week_start: date | None) -> da
 
 def run_weekly_recommendation_job(
     *,
-    week_start: date | None = None,
+    week_start: Optional[date] = None,
     freeze: bool = False,
     top_n: int = 3,
     workdays: int = 5,
-    user_id: int | None = None,
+    user_id: Optional[int] = None,
 ):
     """
     每周推荐任务：对每个已绑定 namespace 且有偏好的用户，

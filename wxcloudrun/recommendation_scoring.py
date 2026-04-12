@@ -3,6 +3,7 @@
 """
 import re
 from decimal import Decimal
+from typing import Optional
 
 from wxcloudrun.models import MenuItem, UserPreference
 
@@ -11,7 +12,7 @@ def _contains_any(text, keywords):
     return any(keyword in text for keyword in keywords)
 
 
-def pref_dict_from_user_preference(pref: UserPreference | None):
+def pref_dict_from_user_preference(pref: Optional[UserPreference]):
     if not pref:
         return {
             'spicy': None,
