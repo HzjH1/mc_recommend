@@ -69,8 +69,18 @@ def _normalize_meal_slot(value):
     return None
 
 
-def _ensure_user(user_id):
-    user, _ = UserAccount.objects.get_or_create(id=int(user_id), defaults={'status': 1})
+def _ensure_user(user_id, phone=None):
+    """
+    按 URL 中的 user_id 定位/创建 user_account；可选写入手机号便于运营排查。
+    """
+    phone = (phone or '').strip()[:20]
+    defaults = {'status': 1}
+    if phone:
+        defaults['phone'] = phone
+    user, _ = UserAccount.objects.get_or_create(id=int(user_id), defaults=defaults)
+    if phone and (not user.phone or user.phone != phone):
+        UserAccount.objects.filter(pk=user.pk).update(phone=phone)
+        user.phone = phone
     return user
 
 
@@ -222,9 +232,16 @@ def put_user_meican_session(request, user_id):
         return err
 
     access = str(body.get('accessToken') or body.get('access_token') or '').strip()
-    refresh = str(body.get('refreshToken') or body.get('refresh_token') or '').strip()
-    if not access or not refresh:
-        return _resp(code=40021, message='缺少accessToken或refreshToken')
+    refresh_in = str(body.get('refreshToken') or body.get('refresh_token') or '').strip()
+    if not access:
+        return _resp(code=40021, message='缺少accessToken')
+
+    phone = str(body.get('phone') or '').strip()[:20]
+    user = _ensure_user(user_id, phone=phone)
+    existing = UserMeicanAccount.objects.filter(user=user).first()
+    refresh = refresh_in or (existing.refresh_token if existing else '')
+    if not refresh:
+        return _resp(code=40021, message='缺少refreshToken且无历史refresh可沿用')
 
     expires_in = body.get('expiresIn') if body.get('expiresIn') is not None else body.get('expires_in')
     try:
@@ -242,9 +259,10 @@ def put_user_meican_session(request, user_id):
         or 'meican_user',
     ).strip()
     email = str(body.get('meicanEmail') or body.get('meican_email') or '').strip()
-    namespace = str(body.get('accountNamespace') or body.get('account_namespace') or '').strip()
+    namespace_in = str(body.get('accountNamespace') or body.get('account_namespace') or '').strip()
+    # 请求未带 namespace 时保留库内原值，避免被刷成空导致推荐批次对不上
+    namespace = namespace_in or (existing.account_namespace if existing else '')
 
-    user = _ensure_user(user_id)
     obj, _ = UserMeicanAccount.objects.update_or_create(
         user=user,
         defaults={
