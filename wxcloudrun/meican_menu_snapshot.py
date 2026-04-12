@@ -3,8 +3,24 @@
 与 mc1 小程序 `services/meican/api.js` 一致：Forward calendarItems → restaurants/list +
 recommendations/dishes，组装 days 后调用 sync_menu_days 落库。
 依赖环境变量（与小程序 config 同源）：MEICAN_FORWARD_CLIENT_ID / MEICAN_FORWARD_CLIENT_SECRET。
+
+支持从仓库根目录执行: python3 wxcloudrun/meican_menu_snapshot.py（会补全 sys.path 并 django.setup）。
 """
 from __future__ import annotations
+
+import os
+import sys
+from pathlib import Path
+
+_ROOT = Path(__file__).resolve().parent.parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'wxcloudrun.settings')
+
+import django
+
+django.setup()
 
 import json
 import uuid
@@ -534,3 +550,12 @@ def sync_meican_menu_snapshot_for_user_dates(
         'errors': out.get('errors') or [],
         'fatal': out.get('fatal'),
     }
+
+
+if __name__ == '__main__':
+    print(
+        '本文件为库模块，无独立 CLI。请在 manage.py shell 中导入并调用：\n'
+        '  sync_meican_menu_snapshot_for_user_dates(user, namespace, [date(...), ...])\n'
+        '生成推荐前会自动尝试同步；亦可执行 python3 manage.py run_weekly_recommendations --help',
+        flush=True,
+    )
