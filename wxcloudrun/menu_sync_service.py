@@ -1,6 +1,23 @@
 """
 将小程序上报的「周菜单」JSON 写入 menu_snapshot / menu_item。
+
+支持从仓库根目录执行: python3 wxcloudrun/menu_sync_service.py
+（会补全 sys.path 并 django.setup；作为库被引用时行为不变）
 """
+import os
+import sys
+from pathlib import Path
+
+_ROOT = Path(__file__).resolve().parent.parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'wxcloudrun.settings')
+
+import django
+
+django.setup()
+
 from datetime import datetime
 
 from django.db import transaction
@@ -164,3 +181,11 @@ def sync_menu_days(namespace: str, days: list):
                     errors.append({'date': str(date_val), 'mealSlot': meal_slot, 'error': '无有效菜品字段'})
 
     return {'slots_synced': slots_synced, 'errors': errors, 'fatal': False}
+
+
+if __name__ == '__main__':
+    print(
+        'menu_sync_service 为库模块，请通过代码调用 sync_menu_days，或使用：\n'
+        '  python3 manage.py import_menu_week_json --help',
+        flush=True,
+    )
