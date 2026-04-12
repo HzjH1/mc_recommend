@@ -744,7 +744,12 @@ def sync_meican_menu_snapshot_for_user_dates(
     if not days_payload:
         hint: Dict[str, Any] = {
             'datesQueried': day_list,
-            'note': '请确认 datesQueried 含小程序里有档口的日期；shell -c 须单行且 import sync_meican_menu_snapshot_for_user_dates 勿断行',
+            'note': (
+                '若今天是周日，勿用 mon=today-weekday()（会得到上周一）；请用 '
+                'resolve_sync_work_dates() 或 sync_meican_menu_snapshot_for_current_workweek()。'
+                ' shell -c 须单行，import sync_meican_menu_snapshot_for_user_dates 勿断行。'
+            ),
+            'suggestedWorkDates': [d.isoformat() for d in resolve_sync_work_dates()],
         }
         if day_list:
             d0 = day_list[0]
@@ -763,6 +768,11 @@ def sync_meican_menu_snapshot_for_user_dates(
                 hint['calendarEntriesParsed'] = len(_extract_calendar_entries(cal0, default_date_key=d0))
             if isinstance(cal0, dict) and cal0.get('_http_status'):
                 hint['calendarHttpStatus'] = cal0.get('_http_status')
+                if cal0.get('_http_status') == 401:
+                    hint['auth'] = (
+                        'calendarItems 返回 401：access_token 已失效，请小程序重新登录后 '
+                        'PUT /api/v1/users/<id>/meican-session 更新 token'
+                    )
             if isinstance(cal0, dict) and cal0.get('_parse_error'):
                 hint['calendarJsonParseError'] = True
         return {
@@ -780,10 +790,39 @@ def sync_meican_menu_snapshot_for_user_dates(
     }
 
 
+def resolve_sync_work_dates(today: Optional[date] = None) -> List[date]:
+    """
+    与 `recommendation_service.resolve_week_start_monday` 及周推荐任务对齐的 5 个工作日：
+    - 若基准日是周日：从「下周一」起连续 5 个工作日（例如 4/12 周日 → 4/13–4/17）。
+    - 否则：从「本周一」起连续 5 个工作日。
+    """
+    t = today or django_timezone.now().date()
+    if t.weekday() == 6:
+        monday = t + timedelta(days=1)
+    else:
+        monday = t - timedelta(days=t.weekday())
+    return [monday + timedelta(days=i) for i in range(5)]
+
+
+def sync_meican_menu_snapshot_for_current_workweek(
+    user: UserAccount,
+    namespace: str,
+    *,
+    language: str = 'zh-CN',
+    today: Optional[date] = None,
+) -> Dict[str, Any]:
+    """按「当前业务周」同步 5 个工作日菜单（周日用下一周，勿用手写 mon=...-weekday）。"""
+    return sync_meican_menu_snapshot_for_user_dates(
+        user, namespace, resolve_sync_work_dates(today), language=language
+    )
+
+
 if __name__ == '__main__':
     print(
         '本文件为库模块，无独立 CLI。请在 manage.py shell 中导入并调用：\n'
         '  sync_meican_menu_snapshot_for_user_dates(user, namespace, [date(...), ...])\n'
+        '  sync_meican_menu_snapshot_for_current_workweek(user, namespace)  # 与周推荐一致：周日=下一周\n'
+        '  resolve_sync_work_dates()  # 查看当前应同步的 5 个工作日\n'
         '生成推荐前会自动尝试同步；亦可执行 python3 manage.py run_weekly_recommendations --help',
         flush=True,
     )
