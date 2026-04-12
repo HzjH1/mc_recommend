@@ -46,6 +46,26 @@ class Counter(models.Model):
         db_table = 'Counters'
 
 
+class MeicanClientConfig(models.Model):
+    """
+    美餐 Forward / GraphQL 客户端凭证（与 mc1 `config/index.js` 字段语义一致）。
+    使用 key='default' 的单行记录；Forward 缺省时回退到 GraphQL 的 id/secret。
+    """
+
+    id = models.BigAutoField(primary_key=True)
+    key = models.CharField(max_length=32, unique=True, default='default')
+    forward_client_id = models.CharField(max_length=128, blank=True, default='')
+    forward_client_secret = models.CharField(max_length=256, blank=True, default='')
+    graphql_client_id = models.CharField(max_length=128, blank=True, default='')
+    graphql_client_secret = models.CharField(max_length=256, blank=True, default='')
+    forward_base_url = models.CharField(max_length=128, blank=True, default='')
+    graphql_app = models.CharField(max_length=256, blank=True, default='')
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'meican_client_config'
+
+
 class UserAccount(models.Model):
     id = models.BigAutoField(primary_key=True)
     phone = models.CharField(max_length=20, blank=True, default='')

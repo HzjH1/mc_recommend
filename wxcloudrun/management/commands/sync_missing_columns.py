@@ -6,6 +6,7 @@ from wxcloudrun import models
 
 MODEL_ORDER = [
     models.Counter,
+    models.MeicanClientConfig,
     models.UserAccount,
     models.MenuSnapshot,
     models.CorpAddress,

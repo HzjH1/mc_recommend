@@ -9,7 +9,7 @@ from wxcloudrun.recommendation_service import refresh_recommendations_for_user_s
 class Command(BaseCommand):
     help = (
         '为指定用户按「菜单快照」重新生成推荐（写入 recommendation_batch / recommendation_result）。'
-        '若已配置 MEICAN_FORWARD_CLIENT_ID/SECRET 且用户有美餐 token，会先按 namespace 从美餐拉菜单落库；'
+        '若 meican_client_config 或环境变量已配置美餐 client 且用户有 token，会先按 namespace 从美餐拉菜单落库；'
         '加 --no-meican-sync 则只读库中已有快照。'
     )
 

@@ -2,7 +2,8 @@
 """
 与 mc1 小程序 `services/meican/api.js` 一致：Forward calendarItems → restaurants/list +
 recommendations/dishes，组装 days 后调用 sync_menu_days 落库。
-依赖环境变量（与小程序 config 同源）：MEICAN_FORWARD_CLIENT_ID / MEICAN_FORWARD_CLIENT_SECRET。
+美餐 client 凭证：优先表 `meican_client_config`（key=default，与 mc1 config 字段对应），
+缺省再读环境变量 MEICAN_FORWARD_* / MEICAN_GRAPHQL_*（Forward 缺省回退 GraphQL，与 mc1 一致）。
 
 支持从仓库根目录执行: python3 wxcloudrun/meican_menu_snapshot.py（会补全 sys.path 并 django.setup）。
 """
@@ -30,9 +31,14 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from django.conf import settings
 from django.utils import timezone
 
+from wxcloudrun.meican_client_config import (
+    meican_forward_credentials_configured,
+    resolve_forward_base_url,
+    resolve_forward_credentials,
+    resolve_graphql_app,
+)
 from wxcloudrun.menu_sync_service import sync_menu_days
 from wxcloudrun.models import UserAccount, UserMeicanAccount
 
@@ -44,18 +50,16 @@ _DEVICE_ID = str(uuid.uuid4())
 
 
 def _forward_base() -> str:
-    return (getattr(settings, 'MEICAN_FORWARD_BASE_URL', None) or 'https://www.meican.com/forward').rstrip('/')
+    return resolve_forward_base_url()
 
 
 def _forward_credentials() -> Tuple[str, str]:
-    cid = (getattr(settings, 'MEICAN_FORWARD_CLIENT_ID', None) or '').strip()
-    csec = (getattr(settings, 'MEICAN_FORWARD_CLIENT_SECRET', None) or '').strip()
-    return cid, csec
+    return resolve_forward_credentials()
 
 
 def _forward_headers() -> Dict[str, str]:
     cid, csec = _forward_credentials()
-    app = (getattr(settings, 'MEICAN_GRAPHQL_APP', None) or 'meican/web-pc (prod;4.90.1;sys;main)').strip()
+    app = resolve_graphql_app()
     return {
         'clientID': cid,
         'clientSecret': csec,
@@ -503,8 +507,7 @@ def _meal_sections_to_day_payload(date_key: str, meal_sections: List[Dict[str, A
 
 
 def meican_forward_configured() -> bool:
-    cid, csec = _forward_credentials()
-    return bool(cid and csec)
+    return meican_forward_credentials_configured()
 
 
 def sync_meican_menu_snapshot_for_user_dates(
@@ -522,7 +525,10 @@ def sync_meican_menu_snapshot_for_user_dates(
     if not ns:
         return {'ok': False, 'reason': 'namespace 为空'}
     if not meican_forward_configured():
-        return {'ok': False, 'reason': '未配置 MEICAN_FORWARD_CLIENT_ID/MEICAN_FORWARD_CLIENT_SECRET'}
+        return {
+            'ok': False,
+            'reason': '未配置美餐 client：请在 meican_client_config 写入 default 行，或配置环境变量 MEICAN_FORWARD_* / MEICAN_GRAPHQL_*',
+        }
     try:
         acc = UserMeicanAccount.objects.get(user=user)
     except UserMeicanAccount.DoesNotExist:

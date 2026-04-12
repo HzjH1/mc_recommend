@@ -213,4 +213,7 @@ RECOMMENDATION_WEEKLY_REQUIRE_SUNDAY = os.environ.get('RECOMMENDATION_WEEKLY_REQ
 MEICAN_FORWARD_BASE_URL = os.environ.get('MEICAN_FORWARD_BASE_URL', 'https://www.meican.com/forward')
 MEICAN_FORWARD_CLIENT_ID = os.environ.get('MEICAN_FORWARD_CLIENT_ID', '')
 MEICAN_FORWARD_CLIENT_SECRET = os.environ.get('MEICAN_FORWARD_CLIENT_SECRET', '')
+# 与 mc1 一致：Forward 未配置时可回退为 GraphQL client（仅作环境变量兜底，优先用库表 meican_client_config）
+MEICAN_GRAPHQL_CLIENT_ID = os.environ.get('MEICAN_GRAPHQL_CLIENT_ID', '')
+MEICAN_GRAPHQL_CLIENT_SECRET = os.environ.get('MEICAN_GRAPHQL_CLIENT_SECRET', '')
 MEICAN_GRAPHQL_APP = os.environ.get('MEICAN_GRAPHQL_APP', 'meican/web-pc (prod;4.90.1;sys;main)')
