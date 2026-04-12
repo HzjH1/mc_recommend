@@ -24,6 +24,7 @@ from wxcloudrun.models import (
     UserMeicanAccount,
     UserPreference,
 )
+from wxcloudrun.menu_sync_service import normalize_days_payload, sync_menu_days
 from wxcloudrun.recommendation_service import run_weekly_recommendation_job
 
 
@@ -257,6 +258,50 @@ def put_user_meican_session(request, user_id):
         },
     )
     return _resp(data={'userId': user.id, 'meicanAccountId': obj.id, 'tokenExpireAt': token_expire_at.isoformat()})
+
+
+def post_user_menu_week_sync(request, user_id):
+    """
+    菜单快照数据来源：由小程序在美餐拉取菜单后上报本接口，写入 menu_snapshot + menu_item。
+    与 refresh_user_recommendations 使用同一套表；namespace 须与 meican-session / 美餐企业空间一致。
+
+    请求体：
+    - namespace: 企业 namespace（必填）
+    - days: 数组，每项含 date(YYYY-MM-DD)、slots 对象
+    - slots 的 key 支持 LUNCH/DINNER（及 MORNING/NOON/EVENING 等别名）
+    - 每个 slot 可含 tabUniqueId、targetTime、dishes 或 menuItems（菜品数组）
+
+    菜品项支持字段：dishId/id、dishName/name、priceInCent/price_cent、restaurant{ name, uniqueId } 等。
+    """
+    if request.method != 'POST':
+        return _resp(code=40500, message='请求方式错误，请使用POST')
+
+    body, err = _parse_json_body(request)
+    if err:
+        return err
+
+    namespace = str(body.get('namespace') or '').strip()
+    if not namespace:
+        return _resp(code=40022, message='缺少namespace')
+
+    days, derr = normalize_days_payload(body)
+    if derr:
+        return _resp(code=40023, message=derr)
+
+    user = _ensure_user(user_id)
+    out = sync_menu_days(namespace, days)
+    if out.get('fatal'):
+        return _resp(code=40024, message=out['errors'][-1].get('error', '日期错误'))
+
+    return _resp(
+        data={
+            'userId': user.id,
+            'namespace': namespace,
+            'slotsSynced': out['slots_synced'],
+            'errors': out['errors'][:50],
+            'hint': '同步完成后可执行: python3 manage.py refresh_user_recommendations --user-id ... --date ... --namespace ...',
+        }
+    )
 
 
 def get_daily_recommendations(request, user_id):
