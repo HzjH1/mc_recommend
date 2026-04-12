@@ -9,7 +9,8 @@ from wxcloudrun.recommendation_service import refresh_recommendations_for_user_s
 class Command(BaseCommand):
     help = (
         '为指定用户按「菜单快照」重新生成推荐（写入 recommendation_batch / recommendation_result）。'
-        '依赖库中已存在 menu_snapshot + menu_item。'
+        '若已配置 MEICAN_FORWARD_CLIENT_ID/SECRET 且用户有美餐 token，会先按 namespace 从美餐拉菜单落库；'
+        '加 --no-meican-sync 则只读库中已有快照。'
     )
 
     def add_arguments(self, parser):
@@ -34,6 +35,11 @@ class Command(BaseCommand):
             default=3,
             help='每餐期推荐条数，默认 3',
         )
+        parser.add_argument(
+            '--no-meican-sync',
+            action='store_true',
+            help='不从美餐拉取菜单，仅使用数据库已有 menu_snapshot',
+        )
 
     def handle(self, *args, **options):
         user_id = options['user_id']
@@ -42,6 +48,7 @@ class Command(BaseCommand):
         meal_arg = options['meal_slot']
         freeze = options['freeze']
         top_n = max(1, int(options['top_n']))
+        sync_menu = not options['no_meican_sync']
 
         try:
             date_val = datetime.strptime(date_raw, '%Y-%m-%d').date()
@@ -61,7 +68,13 @@ class Command(BaseCommand):
         created_batches = []
         for meal_slot in slots:
             out = refresh_recommendations_for_user_slot(
-                user, namespace, date_val, meal_slot, freeze=freeze, top_n=top_n
+                user,
+                namespace,
+                date_val,
+                meal_slot,
+                freeze=freeze,
+                top_n=top_n,
+                sync_menu_if_missing=sync_menu,
             )
             if out.get('ok'):
                 created_batches.append(

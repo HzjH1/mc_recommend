@@ -2,7 +2,7 @@
 推荐结果落库：按 menu_snapshot / menu_item 为单用户生成 recommendation_batch + recommendation_result。
 """
 from datetime import date, timedelta
-from typing import Optional
+from typing import Optional, Set
 
 from django.db import transaction
 from django.db.models import Max
@@ -19,6 +19,7 @@ from wxcloudrun.models import (
     UserMeicanAccount,
     UserPreference,
 )
+from wxcloudrun.meican_menu_snapshot import sync_meican_menu_snapshot_for_user_dates
 from wxcloudrun.recommendation_scoring import pref_dict_from_user_preference, rank_top_menu_items
 
 
@@ -30,9 +31,14 @@ def refresh_recommendations_for_user_slot(
     *,
     freeze: bool = False,
     top_n: int = 3,
+    sync_menu_if_missing: bool = True,
+    meican_menu_sync_attempted_dates: Optional[Set[date]] = None,
 ):
     """
     为单个用户、单日、单餐期生成一批推荐。
+    当缺少该餐期的 menu_snapshot / menu_item 且 sync_menu_if_missing 为 True 时，
+    会按用户美餐 session（须与 namespace 一致）调用美餐 Forward 拉单日菜单并 sync_menu_days。
+    meican_menu_sync_attempted_dates 若传入，则每个自然日只尝试拉取一次（周任务内午/晚共用）。
     成功返回 dict: {ok, batch_id, version, status, meal_slot, date}
     跳过返回 dict: {ok: False, skip: reason}
     """
@@ -44,13 +50,22 @@ def refresh_recommendations_for_user_slot(
     pref_dict = pref_dict_from_user_preference(pref)
 
     snap = MenuSnapshot.objects.filter(namespace=ns, date=day, meal_slot=meal_slot).first()
+    has_items = bool(snap and MenuItem.objects.filter(snapshot=snap).exists())
+    if (not snap or not has_items) and sync_menu_if_missing:
+        should_try = meican_menu_sync_attempted_dates is None or day not in meican_menu_sync_attempted_dates
+        if should_try:
+            sync_meican_menu_snapshot_for_user_dates(user, ns, [day], language='zh-CN')
+            if meican_menu_sync_attempted_dates is not None:
+                meican_menu_sync_attempted_dates.add(day)
+        snap = MenuSnapshot.objects.filter(namespace=ns, date=day, meal_slot=meal_slot).first()
+        has_items = bool(snap and MenuItem.objects.filter(snapshot=snap).exists())
+
     if not snap:
         return {'ok': False, 'skip': f'无 menu_snapshot {day} {meal_slot}'}
-
-    menu_qs = MenuItem.objects.filter(snapshot=snap)
-    if not menu_qs.exists():
+    if not has_items:
         return {'ok': False, 'skip': f'snapshot {snap.id} 无 menu_item'}
 
+    menu_qs = MenuItem.objects.filter(snapshot=snap)
     ranked = rank_top_menu_items(pref_dict, menu_qs, top_n=max(1, int(top_n)))
     if not ranked:
         return {'ok': False, 'skip': '无可用菜品参与打分'}
@@ -155,11 +170,18 @@ def run_weekly_recommendation_job(
             summary['skipped'].append({'userId': user.id, 'reason': '无 user_preference'})
             continue
 
+        meican_sync_dates: Set[date] = set()
         for i in range(workdays):
             d = monday + timedelta(days=i)
             for meal_slot in (MealSlot.LUNCH, MealSlot.DINNER):
                 out = refresh_recommendations_for_user_slot(
-                    user, ns, d, meal_slot, freeze=freeze, top_n=top_n
+                    user,
+                    ns,
+                    d,
+                    meal_slot,
+                    freeze=freeze,
+                    top_n=top_n,
+                    meican_menu_sync_attempted_dates=meican_sync_dates,
                 )
                 if out.get('ok'):
                     summary['created'].append({'userId': user.id, **out})

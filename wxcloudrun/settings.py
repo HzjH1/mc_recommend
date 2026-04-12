@@ -208,3 +208,9 @@ AUTO_ORDER_DINNER_DEADLINE = os.environ.get('AUTO_ORDER_DINNER_DEADLINE', '16:30
 RECOMMENDATION_WEEKLY_REQUIRE_SUNDAY = os.environ.get('RECOMMENDATION_WEEKLY_REQUIRE_SUNDAY', '').lower() in (
     '1', 'true', 'yes',
 )
+
+# 服务端拉取美餐菜单（与 mc1 Forward 一致）；未配置时推荐任务仍依赖小程序 week-sync 上报
+MEICAN_FORWARD_BASE_URL = os.environ.get('MEICAN_FORWARD_BASE_URL', 'https://www.meican.com/forward')
+MEICAN_FORWARD_CLIENT_ID = os.environ.get('MEICAN_FORWARD_CLIENT_ID', '')
+MEICAN_FORWARD_CLIENT_SECRET = os.environ.get('MEICAN_FORWARD_CLIENT_SECRET', '')
+MEICAN_GRAPHQL_APP = os.environ.get('MEICAN_GRAPHQL_APP', 'meican/web-pc (prod;4.90.1;sys;main)')
