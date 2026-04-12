@@ -217,3 +217,12 @@ MEICAN_FORWARD_CLIENT_SECRET = os.environ.get('MEICAN_FORWARD_CLIENT_SECRET', ''
 MEICAN_GRAPHQL_CLIENT_ID = os.environ.get('MEICAN_GRAPHQL_CLIENT_ID', '')
 MEICAN_GRAPHQL_CLIENT_SECRET = os.environ.get('MEICAN_GRAPHQL_CLIENT_SECRET', '')
 MEICAN_GRAPHQL_APP = os.environ.get('MEICAN_GRAPHQL_APP', 'meican/web-pc (prod;4.90.1;sys;main)')
+# 与小程序 wx.request 实际行为接近：桌面 Chrome UA 易被美餐返回空列表；留空则用下方默认「类微信」UA
+_default_meican_ua = (
+    'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) '
+    'Mobile/15E148 MicroMessenger/8.0.38(0x1800262c) NetType/WIFI Language/zh_CN'
+)
+MEICAN_FORWARD_USER_AGENT = (os.environ.get('MEICAN_FORWARD_USER_AGENT', '') or _default_meican_ua).strip()
+MEICAN_FORWARD_REFERER = (os.environ.get('MEICAN_FORWARD_REFERER', '') or 'https://servicewechat.com/').strip()
+# 与小程序 storage 中 x-mc-device 一致最佳；留空则按 client_id 派生稳定 UUID（多进程一致）
+MEICAN_X_MC_DEVICE = os.environ.get('MEICAN_X_MC_DEVICE', '').strip()

@@ -24,7 +24,6 @@ import django
 django.setup()
 
 import json
-import uuid
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.error import HTTPError, URLError
@@ -37,17 +36,13 @@ from wxcloudrun.meican_client_config import (
     meican_forward_credentials_configured,
     resolve_forward_base_url,
     resolve_forward_credentials,
+    resolve_forward_referer,
+    resolve_forward_user_agent,
     resolve_graphql_app,
+    resolve_x_mc_device,
 )
 from wxcloudrun.menu_sync_service import sync_menu_days
 from wxcloudrun.models import UserAccount, UserMeicanAccount
-
-_MEICAN_UA = (
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 '
-    '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-)
-_DEVICE_ID = str(uuid.uuid4())
-
 
 def _forward_base() -> str:
     return resolve_forward_base_url()
@@ -64,11 +59,13 @@ def _forward_headers() -> Dict[str, str]:
         'clientID': cid,
         'clientSecret': csec,
         'x-mc-app': app,
-        'x-mc-device': _DEVICE_ID,
+        'x-mc-device': resolve_x_mc_device(),
         'x-mc-page': '/auth/verification?stamp=AC',
-        'Referer': 'https://www.meican.com/auth/verification',
+        'Referer': resolve_forward_referer(),
         'accept-language': 'zh',
-        'User-Agent': _MEICAN_UA,
+        'Accept': '*/*',
+        'Content-Type': 'application/json',
+        'User-Agent': resolve_forward_user_agent(),
     }
 
 
@@ -133,9 +130,9 @@ def _refresh_meican_token(acc: UserMeicanAccount) -> bool:
         headers={
             'clientID': cid,
             'clientSecret': csec,
-            'Referer': 'https://www.meican.com/',
+            'Referer': resolve_forward_referer(),
             'Content-Type': 'application/x-www-form-urlencoded',
-            'User-Agent': _MEICAN_UA,
+            'User-Agent': resolve_forward_user_agent(),
         },
     )
     try:
@@ -351,8 +348,14 @@ def _extract_recommended_dishes(payload: Any) -> List[Dict[str, Any]]:
     def pred(item: Dict[str, Any]) -> bool:
         if not isinstance(item, dict):
             return False
-        did = item.get('dishId') or item.get('id') or item.get('revisionId')
-        name = item.get('name') or item.get('dishName')
+        did = (
+            item.get('dishId')
+            or item.get('id')
+            or item.get('revisionId')
+            or item.get('productId')
+            or item.get('uniqueId')
+        )
+        name = item.get('name') or item.get('dishName') or item.get('title')
         return bool(did and name)
 
     found: List[Any] = []
@@ -363,7 +366,7 @@ def _extract_recommended_dishes(payload: Any) -> List[Dict[str, Any]]:
             continue
         dishes.append(
             {
-                'id': _pick_first(dish, ['dishId', 'id', 'revisionId'], ''),
+                'id': _pick_first(dish, ['dishId', 'id', 'revisionId', 'productId', 'uniqueId'], ''),
                 'name': _pick_first(dish, ['dishName', 'name', 'title'], ''),
                 'price': _format_price(_pick_first(dish, ['price', 'priceInCent', 'priceCent'], '')),
                 'status': _pick_first(dish, ['status', 'sellStatus'], 'available'),
@@ -403,8 +406,10 @@ def _build_sync_dishes_from_section(section: Dict[str, Any]) -> List[Dict[str, A
     for dish in _ensure_list(section.get('recommendedDishes')):
         if not isinstance(dish, dict):
             continue
-        dish_id = str(dish.get('id') or '').strip()
-        dish_name = dish.get('name')
+        dish_id = str(
+            _pick_first(dish, ['id', 'dishId', 'revisionId', 'productId', 'uniqueId'], '') or ''
+        ).strip()
+        dish_name = _pick_first(dish, ['name', 'dishName', 'title'], None)
         if not dish_id or not dish_name:
             continue
         out.append(

@@ -60,6 +60,9 @@ class MeicanClientConfig(models.Model):
     graphql_client_secret = models.CharField(max_length=256, blank=True, default='')
     forward_base_url = models.CharField(max_length=128, blank=True, default='')
     graphql_app = models.CharField(max_length=256, blank=True, default='')
+    forward_user_agent = models.CharField(max_length=512, blank=True, default='')
+    forward_referer = models.CharField(max_length=512, blank=True, default='')
+    x_mc_device = models.CharField(max_length=64, blank=True, default='')
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:

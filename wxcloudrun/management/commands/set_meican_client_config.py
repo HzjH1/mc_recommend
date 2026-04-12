@@ -16,6 +16,24 @@ class Command(BaseCommand):
         parser.add_argument('--graphql-secret', type=str, default='', help='meicanGraphqlClientSecret（回退用）')
         parser.add_argument('--forward-base-url', type=str, default='', help='可选，默认 https://www.meican.com/forward')
         parser.add_argument('--graphql-app', type=str, default='', help='x-mc-app，可选')
+        parser.add_argument(
+            '--forward-user-agent',
+            type=str,
+            default='',
+            help='Forward 请求 User-Agent（与小程序 wx.request 一致可减少空数据）',
+        )
+        parser.add_argument(
+            '--forward-referer',
+            type=str,
+            default='',
+            help='Forward 请求 Referer，默认库不写则用 settings 的 servicewechat.com',
+        )
+        parser.add_argument(
+            '--mc-device',
+            type=str,
+            default='',
+            help='x-mc-device，与小程序 storage 一致最佳；可填 curl 里抓到的 UUID',
+        )
 
     def handle(self, *args, **options):
         row = MeicanClientConfig.objects.filter(key='default').first()
@@ -29,6 +47,9 @@ class Command(BaseCommand):
             ('graphql_secret', 'graphql_client_secret'),
             ('forward_base_url', 'forward_base_url'),
             ('graphql_app', 'graphql_app'),
+            ('forward_user_agent', 'forward_user_agent'),
+            ('forward_referer', 'forward_referer'),
+            ('mc_device', 'x_mc_device'),
         )
         touched = False
         for opt_key, field in mapping:
