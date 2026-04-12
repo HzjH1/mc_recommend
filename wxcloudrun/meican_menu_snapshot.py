@@ -217,11 +217,12 @@ def _forward_dict_candidates(payload: Any) -> List[Dict[str, Any]]:
 
 
 def _infer_meal_bucket(item: Dict[str, Any]) -> str:
+    """与小程序档口一致：晚餐 -> afternoon(DINNER)，其余含午餐/午 -> morning(LUNCH)。"""
     src = (
         f'{_pick_first(item, ["tabName", "name", "title", "mealType", "categoryName"], "")}'
         f'{_pick_first(item, ["targetTime", "startTime"], "")}'
     ).lower()
-    if '晚' in src or 'dinner' in src or 'night' in src:
+    if '晚餐' in src or '晚' in src or 'dinner' in src or 'night' in src:
         return 'afternoon'
     return 'morning'
 
@@ -284,6 +285,25 @@ def _extract_calendar_entries(payload: Any, default_date_key: str = '') -> List[
     out: List[Dict[str, Any]] = []
 
     for root in _forward_dict_candidates(payload):
+        date_list = root.get('dateList')
+        if isinstance(date_list, list):
+            for day_block in date_list:
+                if not isinstance(day_block, dict):
+                    continue
+                day_date = str(day_block.get('date') or dkey)[:10]
+                cal_items = day_block.get('calendarItemList')
+                if not isinstance(cal_items, list):
+                    continue
+                for item in cal_items:
+                    ent = _calendar_item_to_entry(item, day_date) if isinstance(item, dict) else None
+                    if not ent:
+                        continue
+                    k = f'{ent["tabUniqueId"]}-{ent["targetTime"]}'
+                    if k in seen_keys:
+                        continue
+                    seen_keys.add(k)
+                    out.append(ent)
+
         for arr_key in ('calendarItems', 'items', 'list', 'dayList', 'calendarItemList', 'calendar'):
             arr = root.get(arr_key)
             if not isinstance(arr, list):
@@ -380,9 +400,35 @@ def _extract_restaurants(payload: Any) -> List[Dict[str, Any]]:
         name = item.get('name') or item.get('restaurantName')
         return bool(rid and name)
 
+    seen_rid: Set[str] = set()
+    restaurants: List[Dict[str, Any]] = []
+    for root in _forward_dict_candidates(payload):
+        lst = root.get('restaurantList')
+        if not isinstance(lst, list):
+            continue
+        for r in lst:
+            if not isinstance(r, dict):
+                continue
+            rid = str(_pick_first(r, ['restaurantId', 'id', 'uniqueId'], '') or '').strip()
+            rname = str(_pick_first(r, ['restaurantName', 'name', 'title'], '') or '').strip()
+            if not rid or not rname or rid in seen_rid:
+                continue
+            seen_rid.add(rid)
+            restaurants.append(
+                {
+                    'id': rid,
+                    'name': rname,
+                    'distance': _pick_first(r, ['distance', 'distanceInMeter'], ''),
+                    'status': 'available' if r.get('open') is True else _pick_first(r, ['status', 'sellStatus'], 'available'),
+                    'menus': _extract_restaurant_menus(r),
+                }
+            )
+    if restaurants:
+        return restaurants
+
     found: List[Any] = []
-    _collect_matching(payload, pred, found, set())
-    restaurants = []
+    for root in _forward_dict_candidates(payload):
+        _collect_matching(root, pred, found, set())
     for restaurant in found:
         if not isinstance(restaurant, dict):
             continue
