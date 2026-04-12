@@ -36,6 +36,8 @@ urlpatterns = (
     url(r'^^api/v1/internal/jobs/auto-order/run(/)?$', v1_views.post_internal_auto_order_run),
     # V1-内部任务状态查询
     url(r'^^api/v1/internal/jobs/auto-order/(?P<job_id>\d+)(/)?$', v1_views.get_internal_auto_order_job),
+    # V1-每周推荐（定时触发：每周日）
+    url(r'^^api/v1/internal/jobs/recommendations/weekly-run(/)?$', v1_views.post_internal_weekly_recommendations_run),
 
     # 获取主页
     url(r'(/)?$', views.index),

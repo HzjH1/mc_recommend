@@ -201,3 +201,10 @@ OPENAI_TIMEOUT_SECONDS = int(os.environ.get('OPENAI_TIMEOUT_SECONDS', '15'))
 INTERNAL_JOB_TOKEN = os.environ.get('INTERNAL_JOB_TOKEN', '')
 AUTO_ORDER_LUNCH_DEADLINE = os.environ.get('AUTO_ORDER_LUNCH_DEADLINE', '10:30')
 AUTO_ORDER_DINNER_DEADLINE = os.environ.get('AUTO_ORDER_DINNER_DEADLINE', '16:30')
+
+# 每周推荐任务：请在微信云托管控制台将「定时触发」配置为每周日调用
+# POST /api/v1/internal/jobs/recommendations/weekly-run（需 X-Internal-Token，与 INTERNAL_JOB_TOKEN 一致）
+# 为 true 时仅允许在周日执行该接口（防误触）；默认 false 便于联调
+RECOMMENDATION_WEEKLY_REQUIRE_SUNDAY = os.environ.get('RECOMMENDATION_WEEKLY_REQUIRE_SUNDAY', '').lower() in (
+    '1', 'true', 'yes',
+)

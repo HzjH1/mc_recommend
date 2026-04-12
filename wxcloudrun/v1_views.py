@@ -24,6 +24,7 @@ from wxcloudrun.models import (
     UserMeicanAccount,
     UserPreference,
 )
+from wxcloudrun.recommendation_service import run_weekly_recommendation_job
 
 
 def _request_id():
@@ -520,5 +521,68 @@ def get_internal_auto_order_job(request, job_id):
             'failedItems': failed_items,
             'startedAt': job.started_at.isoformat() if job.started_at else None,
             'finishedAt': job.finished_at.isoformat() if job.finished_at else None,
+        }
+    )
+
+
+def post_internal_weekly_recommendations_run(request):
+    """
+    每周日由云托管「定时触发」调用：为已绑定 namespace 且有偏好的用户生成下周工作日推荐。
+    请求体可选：weekStart（周一 YYYY-MM-DD）、freeze、topN、workdays、userId、requireSunday（默认 false）。
+    生产环境可将 RECOMMENDATION_WEEKLY_REQUIRE_SUNDAY=true，仅允许周日执行。
+    """
+    if request.method != 'POST':
+        return _resp(code=40500, message='请求方式错误，请使用POST')
+    if not _internal_auth_ok(request):
+        return _resp(code=40101, message='内部鉴权失败')
+
+    body, err = _parse_json_body(request)
+    if err:
+        body = {}
+
+    if getattr(settings, 'RECOMMENDATION_WEEKLY_REQUIRE_SUNDAY', False):
+        if timezone.now().date().weekday() != 6:
+            return _resp(code=40903, message='RECOMMENDATION_WEEKLY_REQUIRE_SUNDAY：仅允许周日执行')
+
+    if body.get('requireSunday'):
+        if timezone.now().date().weekday() != 6:
+            return _resp(code=40904, message='requireSunday：仅允许周日执行')
+
+    week_start = None
+    if body.get('weekStart'):
+        week_start, werr = _parse_date(body.get('weekStart'))
+        if werr:
+            return _resp(code=40030, message=werr)
+
+    freeze = bool(body.get('freeze'))
+    try:
+        top_n = int(body.get('topN', body.get('top_n', 3)))
+    except (TypeError, ValueError):
+        top_n = 3
+    try:
+        workdays = int(body.get('workdays', 5))
+    except (TypeError, ValueError):
+        workdays = 5
+
+    user_id = body.get('userId') if body.get('userId') is not None else body.get('user_id')
+    try:
+        user_id = int(user_id) if user_id is not None else None
+    except (TypeError, ValueError):
+        return _resp(code=40031, message='userId 无效')
+
+    summary = run_weekly_recommendation_job(
+        week_start=week_start,
+        freeze=freeze,
+        top_n=top_n,
+        workdays=workdays,
+        user_id=user_id,
+    )
+    return _resp(
+        data={
+            'weekStartMonday': summary['weekStartMonday'],
+            'createdCount': len(summary['created']),
+            'skippedCount': len(summary['skipped']),
+            'created': summary['created'][:500],
+            'skipped': summary['skipped'][:500],
         }
     )
