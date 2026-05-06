@@ -1,4 +1,5 @@
 import json
+import logging
 import uuid
 from datetime import datetime, time, timedelta
 from urllib.error import HTTPError, URLError
@@ -37,6 +38,8 @@ from wxcloudrun.meican_client_config import (
     resolve_x_mc_device,
 )
 from wxcloudrun.recommendation_service import run_weekly_recommendation_job
+
+logger = logging.getLogger(__name__)
 
 
 def _request_id():
@@ -255,10 +258,35 @@ def _submit_meican_order_for_manual(user: UserAccount, menu_item: MenuItem, name
             'remarks': json.dumps([{'dishId': str(ctx['dishId']), 'remark': ''}], ensure_ascii=False),
         }
     )
+    logger.info(
+        'manual_order.forward_request user_id=%s namespace=%s menu_item_id=%s dish_id=%s tab_unique_id=%s target_time=%s',
+        user.id,
+        ns,
+        menu_item.id,
+        ctx['dishId'],
+        ctx['tabUniqueId'],
+        ctx['targetTime'],
+    )
     try:
         out = _forward_form_post('/api/v2.1/orders/add', form_body, access_token=str(acc.access_token or '').strip())
+        logger.info(
+            'manual_order.forward_response user_id=%s namespace=%s menu_item_id=%s status=%s message=%s',
+            user.id,
+            ns,
+            menu_item.id,
+            str(out.get('status') if isinstance(out, dict) else ''),
+            str(out.get('message') if isinstance(out, dict) else ''),
+        )
     except HTTPError as e:
         raw = e.read().decode('utf-8', errors='replace') if e.fp else ''
+        logger.warning(
+            'manual_order.forward_http_error user_id=%s namespace=%s menu_item_id=%s http_status=%s body=%s',
+            user.id,
+            ns,
+            menu_item.id,
+            e.code,
+            raw[:1000],
+        )
         try:
             err_obj = json.loads(raw) if raw else {}
             msg = err_obj.get('message') or err_obj.get('error') or f'HTTP_{e.code}'
@@ -266,6 +294,12 @@ def _submit_meican_order_for_manual(user: UserAccount, menu_item: MenuItem, name
             msg = f'HTTP_{e.code}'
         raise ValueError(f'MEICAN_API_ERROR:{msg}')
     except URLError:
+        logger.warning(
+            'manual_order.forward_network_error user_id=%s namespace=%s menu_item_id=%s',
+            user.id,
+            ns,
+            menu_item.id,
+        )
         raise ValueError('MEICAN_API_ERROR:NETWORK')
 
     if isinstance(out, dict):
@@ -600,9 +634,27 @@ def post_manual_order(request, user_id):
                 return _resp(code=40901, message='ORDER_ALREADY_EXISTS')
 
         try:
+            logger.info(
+                'manual_order.submit_start user_id=%s date=%s meal_slot=%s menu_item_id=%s namespace=%s replace=%s',
+                user.id,
+                str(date_val),
+                meal_slot,
+                menu_item.id,
+                namespace,
+                replace,
+            )
             meican_order_unique_id = _submit_meican_order_for_manual(user, menu_item, namespace)
         except ValueError as e:
             msg = str(e)
+            logger.warning(
+                'manual_order.submit_failed user_id=%s date=%s meal_slot=%s menu_item_id=%s namespace=%s error=%s',
+                user.id,
+                str(date_val),
+                meal_slot,
+                menu_item.id,
+                namespace,
+                msg,
+            )
             if msg == 'NO_DEFAULT_ADDRESS':
                 return _resp(code=40903, message='NO_DEFAULT_ADDRESS')
             if msg == 'MEICAN_SESSION_REQUIRED':
@@ -622,6 +674,15 @@ def post_manual_order(request, user_id):
             status='CREATED',
             idempotency_key=idempotency_key,
             meican_order_unique_id=meican_order_unique_id,
+        )
+        logger.info(
+            'manual_order.submit_success user_id=%s order_id=%s date=%s meal_slot=%s menu_item_id=%s meican_order_unique_id=%s',
+            user.id,
+            order.id,
+            str(date_val),
+            meal_slot,
+            menu_item.id,
+            meican_order_unique_id,
         )
     return _resp(data={'orderId': order.id, 'status': order.status, 'meicanOrderUniqueId': meican_order_unique_id})
 
