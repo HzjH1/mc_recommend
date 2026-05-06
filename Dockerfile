@@ -24,9 +24,9 @@ WORKDIR /app
 # 选用国内镜像源以提高下载速度
 RUN pip3 config set global.index-url http://mirrors.cloud.tencent.com/pypi/simple \
 && pip3 config set global.trusted-host mirrors.cloud.tencent.com \
-&& pip3 install --upgrade pip \
+&& pip3 install --break-system-packages --no-cache-dir --upgrade pip \
 # pip install scipy 等数学包失败，可使用 apk add py3-scipy 进行， 参考安装 https://pkgs.alpinelinux.org/packages?name=py3-scipy&branch=v3.13
-&& pip3 install --user -r requirements.txt
+&& pip3 install --break-system-packages --no-cache-dir --user -r requirements.txt
 
 # 安装最新版 npm 与最新版 @qwen-code/sdk
 RUN npm install -g npm@latest @qwen-code/sdk@latest
