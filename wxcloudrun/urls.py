@@ -32,6 +32,8 @@ urlpatterns = (
     url(r'^^api/v1/users/(?P<user_id>\d+)/menu/week-sync(/)?$', v1_views.post_user_menu_week_sync),
     # V1-每日推荐
     url(r'^^api/v1/users/(?P<user_id>\d+)/recommendations/daily(/)?$', v1_views.get_daily_recommendations),
+    # V1-收餐地址候选（用于手动点餐/自动点餐配置前弹窗选择）
+    url(r'^^api/v1/users/(?P<user_id>\d+)/order-addresses(/)?$', v1_views.get_user_order_addresses),
     # V1-手动下单
     url(r'^^api/v1/users/(?P<user_id>\d+)/orders(/)?$', v1_views.post_manual_order),
     # V1-内部任务触发

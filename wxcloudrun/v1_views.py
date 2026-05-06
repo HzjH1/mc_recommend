@@ -39,7 +39,8 @@ from wxcloudrun.meican_client_config import (
 )
 from wxcloudrun.recommendation_service import run_weekly_recommendation_job
 
-logger = logging.getLogger(__name__)
+# settings.LOGGING 仅显式配置了 logger "log"，这里统一走该通道，确保落盘到 all-*.log
+logger = logging.getLogger('log')
 
 
 def _request_id():
@@ -213,28 +214,159 @@ def _resolve_default_address_ids(namespace: str, access_token: str):
         access_token=access_token,
     )
     first = (
-        _ensure_list(_pick_first(payload, ['data.list', 'data.addresses', 'addresses', 'result.list'], []))[:1] or [{}]
+        _ensure_list(_pick_first(payload, ['data.addressList', 'addressList', 'result.addressList'], []))[:1]
+        or _ensure_list(_pick_first(payload, ['data.list', 'data.addresses', 'addresses', 'result.list'], []))[:1]
+        or [{}]
     )[0]
+    final_value = first.get('finalValue') if isinstance(first.get('finalValue'), dict) else {}
     user_addr = str(
         _pick_first(
-            first,
-            ['userAddressUniqueId', 'userAddressId', 'userAddress.uniqueId', 'address.uniqueId', 'id'],
+            {**first, 'finalValue': final_value},
+            [
+                'userAddressUniqueId',
+                'userAddressId',
+                'userAddress.uniqueId',
+                'address.uniqueId',
+                'finalValue.userAddressUniqueId',
+                'finalValue.uniqueId',
+                'id',
+            ],
             _pick_first(payload, ['data.defaultUserAddressUniqueId', 'defaultUserAddressUniqueId'], ''),
         )
     ).strip()
     corp_addr = str(
         _pick_first(
-            first,
-            ['corpAddressUniqueId', 'corpAddressId', 'corpAddress.uniqueId', 'addressUniqueId', 'uniqueId'],
+            {**first, 'finalValue': final_value},
+            [
+                'corpAddressUniqueId',
+                'corpAddressId',
+                'corpAddress.uniqueId',
+                'addressUniqueId',
+                'finalValue.corpAddressUniqueId',
+                'finalValue.uniqueId',
+                'uniqueId',
+            ],
             _pick_first(payload, ['data.defaultCorpAddressUniqueId', 'defaultCorpAddressUniqueId'], ''),
         )
     ).strip() or user_addr
     if not user_addr or not corp_addr:
+        logger.warning(
+            'manual_order.address_resolve_failed namespace=%s user_addr=%s corp_addr=%s payload=%s',
+            namespace,
+            user_addr,
+            corp_addr,
+            json.dumps(payload, ensure_ascii=False)[:1200],
+        )
         raise ValueError('NO_DEFAULT_ADDRESS')
+    logger.info(
+        'manual_order.address_resolved namespace=%s user_addr=%s corp_addr=%s',
+        namespace,
+        user_addr,
+        corp_addr,
+    )
     return user_addr, corp_addr
 
 
-def _submit_meican_order_for_manual(user: UserAccount, menu_item: MenuItem, namespace: str):
+def _fetch_address_options(namespace: str, access_token: str):
+    payload = _forward_json_get(
+        '/api/v2.1/corpaddresses/getmulticorpaddress',
+        {'namespace': namespace},
+        access_token=access_token,
+    )
+    rows = []
+    rows.extend(_ensure_list(_pick_first(payload, ['data.addressList', 'addressList', 'result.addressList'], [])))
+    rows.extend(_ensure_list(_pick_first(payload, ['data.list', 'data.addresses', 'addresses', 'result.list'], [])))
+    options = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        final_value = row.get('finalValue') if isinstance(row.get('finalValue'), dict) else {}
+        user_addr = str(
+            _pick_first(
+                {**row, 'finalValue': final_value},
+                [
+                    'userAddressUniqueId',
+                    'userAddressId',
+                    'userAddress.uniqueId',
+                    'address.uniqueId',
+                    'finalValue.userAddressUniqueId',
+                    'finalValue.uniqueId',
+                    'id',
+                ],
+                '',
+            )
+        ).strip()
+        corp_addr = str(
+            _pick_first(
+                {**row, 'finalValue': final_value},
+                [
+                    'corpAddressUniqueId',
+                    'corpAddressId',
+                    'corpAddress.uniqueId',
+                    'addressUniqueId',
+                    'finalValue.corpAddressUniqueId',
+                    'finalValue.uniqueId',
+                    'uniqueId',
+                ],
+                '',
+            )
+        ).strip() or user_addr
+        if not user_addr or not corp_addr:
+            continue
+        label = ' / '.join(
+            [
+                str(_pick_first(row, ['corpName'], '')).strip(),
+                str(_pick_first({**row, 'finalValue': final_value}, ['finalValue.pickUpLocation', 'pickUpLocation', 'name', 'addressName'], '')).strip(),
+                str(_pick_first(row, ['address', 'detailAddress', 'fullAddress'], '')).strip(),
+            ]
+        ).strip(' /')
+        options.append(
+            {
+                'userAddressUniqueId': user_addr,
+                'corpAddressUniqueId': corp_addr,
+                'label': label or corp_addr,
+            }
+        )
+    # 去重
+    uniq = []
+    seen = set()
+    for item in options:
+        k = f'{item["userAddressUniqueId"]}::{item["corpAddressUniqueId"]}'
+        if k in seen:
+            continue
+        seen.add(k)
+        uniq.append(item)
+    return uniq
+
+
+def _save_default_corp_address(user: UserAccount, corp_address_id: str):
+    cid = str(corp_address_id or '').strip()
+    if not cid:
+        return
+    cfg = AutoOrderConfig.objects.filter(user=user).first()
+    if cfg:
+        if cfg.default_corp_address_id != cid:
+            cfg.default_corp_address_id = cid
+            cfg.save(update_fields=['default_corp_address_id', 'updated_at'])
+        return
+    AutoOrderConfig.objects.create(
+        user=user,
+        enabled=0,
+        meal_slots='LUNCH,DINNER',
+        strategy='TOP1',
+        default_corp_address_id=cid,
+        effective_from=timezone.now().date(),
+        effective_to=None,
+    )
+
+
+def _submit_meican_order_for_manual(
+    user: UserAccount,
+    menu_item: MenuItem,
+    namespace: str,
+    selected_user_addr: str = '',
+    selected_corp_addr: str = '',
+):
     acc = UserMeicanAccount.objects.filter(user=user).first()
     if not acc or not str(acc.access_token or '').strip():
         raise ValueError('MEICAN_SESSION_REQUIRED')
@@ -245,7 +377,10 @@ def _submit_meican_order_for_manual(user: UserAccount, menu_item: MenuItem, name
     if not ctx['tabUniqueId'] or not ctx['targetTime'] or not ctx['dishId']:
         raise ValueError('MENU_ITEM_FORWARD_CONTEXT_MISSING')
 
-    user_addr, corp_addr = _resolve_default_address_ids(ns, str(acc.access_token or '').strip())
+    user_addr = str(selected_user_addr or '').strip()
+    corp_addr = str(selected_corp_addr or '').strip()
+    if not user_addr or not corp_addr:
+        user_addr, corp_addr = _resolve_default_address_ids(ns, str(acc.access_token or '').strip())
     dish_for_order = int(ctx['dishId']) if str(ctx['dishId']).isdigit() else ctx['dishId']
     form_body = urlencode(
         {
@@ -309,8 +444,8 @@ def _submit_meican_order_for_manual(user: UserAccount, menu_item: MenuItem, name
         uid = str(
             _pick_first(out, ['uniqueId', 'data.uniqueId', 'order.uniqueId', 'result.uniqueId', 'orderDetail.uniqueId'], '')
         ).strip()
-        return uid
-    return ''
+        return uid, user_addr, corp_addr
+    return '', user_addr, corp_addr
 
 
 def _within_auto_order_window(date_val, meal_slot):
@@ -591,6 +726,33 @@ def get_daily_recommendations(request, user_id):
     return _resp(data=result)
 
 
+def get_user_order_addresses(request, user_id):
+    if request.method != 'GET':
+        return _resp(code=40500, message='请求方式错误，请使用GET')
+
+    user = _ensure_user(user_id)
+    acc = UserMeicanAccount.objects.filter(user=user).first()
+    if not acc or not str(acc.access_token or '').strip():
+        return _resp(code=40102, message='MEICAN_SESSION_REQUIRED')
+
+    namespace = str(request.GET.get('namespace') or acc.account_namespace or '').strip()
+    if not namespace:
+        return _resp(code=40022, message='MEICAN_NAMESPACE_REQUIRED')
+    try:
+        options = _fetch_address_options(namespace, str(acc.access_token or '').strip())
+    except Exception as e:
+        return _resp(code=50201, message=f'ADDRESS_FETCH_FAILED:{e}')
+
+    selected = str(AutoOrderConfig.objects.filter(user=user).values_list('default_corp_address_id', flat=True).first() or '').strip()
+    return _resp(
+        data={
+            'namespace': namespace,
+            'options': options,
+            'selectedCorpAddressId': selected,
+        }
+    )
+
+
 def post_manual_order(request, user_id):
     if request.method != 'POST':
         return _resp(code=40500, message='请求方式错误，请使用POST')
@@ -620,6 +782,8 @@ def post_manual_order(request, user_id):
 
     user = _ensure_user(user_id)
     namespace = str(body.get('namespace') or '').strip()
+    selected_user_addr = str(body.get('userAddressUniqueId') or '').strip()
+    selected_corp_addr = str(body.get('corpAddressUniqueId') or body.get('defaultCorpAddressId') or '').strip()
     replace = bool(body.get('replace') or body.get('replaceOrder'))
     with transaction.atomic():
         existed_by_idem = OrderRecord.objects.filter(idempotency_key=idempotency_key).first()
@@ -643,7 +807,13 @@ def post_manual_order(request, user_id):
                 namespace,
                 replace,
             )
-            meican_order_unique_id = _submit_meican_order_for_manual(user, menu_item, namespace)
+            meican_order_unique_id, used_user_addr, used_corp_addr = _submit_meican_order_for_manual(
+                user,
+                menu_item,
+                namespace,
+                selected_user_addr=selected_user_addr,
+                selected_corp_addr=selected_corp_addr,
+            )
         except ValueError as e:
             msg = str(e)
             logger.warning(
@@ -665,6 +835,8 @@ def post_manual_order(request, user_id):
                 return _resp(code=40904, message='MENU_ITEM_FORWARD_CONTEXT_MISSING')
             return _resp(code=50201, message=msg)
 
+        _save_default_corp_address(user, used_corp_addr)
+
         order = OrderRecord.objects.create(
             user=user,
             date=date_val,
@@ -684,7 +856,15 @@ def post_manual_order(request, user_id):
             menu_item.id,
             meican_order_unique_id,
         )
-    return _resp(data={'orderId': order.id, 'status': order.status, 'meicanOrderUniqueId': meican_order_unique_id})
+    return _resp(
+        data={
+            'orderId': order.id,
+            'status': order.status,
+            'meicanOrderUniqueId': meican_order_unique_id,
+            'defaultCorpAddressId': used_corp_addr,
+            'userAddressUniqueId': used_user_addr,
+        }
+    )
 
 
 def _internal_auth_ok(request):
