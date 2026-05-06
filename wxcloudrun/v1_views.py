@@ -1,6 +1,9 @@
 import json
 import uuid
 from datetime import datetime, time, timedelta
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
 from django.conf import settings
 from django.db import transaction
@@ -25,6 +28,14 @@ from wxcloudrun.models import (
     UserPreference,
 )
 from wxcloudrun.menu_sync_service import normalize_days_payload, sync_menu_days
+from wxcloudrun.meican_client_config import (
+    resolve_forward_base_url,
+    resolve_forward_credentials,
+    resolve_forward_referer,
+    resolve_forward_user_agent,
+    resolve_graphql_app,
+    resolve_x_mc_device,
+)
 from wxcloudrun.recommendation_service import run_weekly_recommendation_job
 
 
@@ -96,6 +107,176 @@ def _parse_hhmm(hhmm, fallback):
         return time(hour=int(h), minute=int(m))
     except Exception:
         return fallback
+
+
+def _pick_first(source, paths, default=''):
+    if not isinstance(source, dict):
+        return default
+    for path in paths:
+        cur = source
+        ok = True
+        for key in path.split('.'):
+            if not isinstance(cur, dict):
+                ok = False
+                break
+            cur = cur.get(key)
+        if ok and cur is not None and str(cur).strip() != '':
+            return cur
+    return default
+
+
+def _ensure_list(value):
+    if isinstance(value, list):
+        return value
+    if value is None:
+        return []
+    return [value]
+
+
+def _format_target_time(dt_val):
+    if dt_val is None:
+        return ''
+    if isinstance(dt_val, datetime):
+        return dt_val.strftime('%Y-%m-%d %H:%M')
+    try:
+        return dt_val.strftime('%Y-%m-%d %H:%M')
+    except Exception:
+        return str(dt_val)
+
+
+def _extract_menu_item_order_context(menu_item):
+    raw = menu_item.raw_json if isinstance(menu_item.raw_json, dict) else {}
+    tab_uid = str(
+        _pick_first(raw, ['tabUniqueId', 'tabUUID', 'tab.uniqueId'], menu_item.snapshot.tab_unique_id or '')
+    ).strip()
+    target_time = str(
+        _pick_first(raw, ['targetTime', 'target_time'], _format_target_time(menu_item.snapshot.target_time))
+    ).strip()
+    dish_id = str(_pick_first(raw, ['dishId', 'id'], menu_item.dish_id or '')).strip()
+    return {
+        'tabUniqueId': tab_uid,
+        'targetTime': target_time,
+        'dishId': dish_id,
+    }
+
+
+def _build_forward_headers(access_token=''):
+    cid, csec = resolve_forward_credentials()
+    headers = {
+        'clientID': cid,
+        'clientSecret': csec,
+        'x-mc-app': resolve_graphql_app(),
+        'x-mc-device': resolve_x_mc_device(),
+        'x-mc-page': '/auth/verification?stamp=AC',
+        'Referer': resolve_forward_referer(),
+        'accept-language': 'zh',
+    }
+    ua = resolve_forward_user_agent()
+    if ua:
+        headers['User-Agent'] = ua
+    if access_token:
+        headers['Authorization'] = f'Bearer {access_token}'
+    return headers
+
+
+def _forward_json_get(path, query, access_token=''):
+    cid, csec = resolve_forward_credentials()
+    base = resolve_forward_base_url().rstrip('/')
+    q = {'client_id': cid, 'client_secret': csec}
+    q.update({k: v for k, v in query.items() if v is not None and str(v).strip() != ''})
+    url = f'{base}{path}?{urlencode(q)}'
+    req = Request(url, method='GET', headers=_build_forward_headers(access_token))
+    with urlopen(req, timeout=30) as resp:  # nosec B310
+        raw = resp.read().decode('utf-8', errors='replace')
+    return json.loads(raw) if raw else {}
+
+
+def _forward_form_post(path, form_body: str, access_token=''):
+    cid, csec = resolve_forward_credentials()
+    base = resolve_forward_base_url().rstrip('/')
+    url = f'{base}{path}?{urlencode({"client_id": cid, "client_secret": csec})}'
+    headers = _build_forward_headers(access_token)
+    headers['Content-Type'] = 'application/x-www-form-urlencoded'
+    req = Request(url, data=form_body.encode('utf-8'), method='POST', headers=headers)
+    with urlopen(req, timeout=45) as resp:  # nosec B310
+        raw = resp.read().decode('utf-8', errors='replace')
+    return json.loads(raw) if raw else {}
+
+
+def _resolve_default_address_ids(namespace: str, access_token: str):
+    payload = _forward_json_get(
+        '/api/v2.1/corpaddresses/getmulticorpaddress',
+        {'namespace': namespace},
+        access_token=access_token,
+    )
+    first = (
+        _ensure_list(_pick_first(payload, ['data.list', 'data.addresses', 'addresses', 'result.list'], []))[:1] or [{}]
+    )[0]
+    user_addr = str(
+        _pick_first(
+            first,
+            ['userAddressUniqueId', 'userAddressId', 'userAddress.uniqueId', 'address.uniqueId', 'id'],
+            _pick_first(payload, ['data.defaultUserAddressUniqueId', 'defaultUserAddressUniqueId'], ''),
+        )
+    ).strip()
+    corp_addr = str(
+        _pick_first(
+            first,
+            ['corpAddressUniqueId', 'corpAddressId', 'corpAddress.uniqueId', 'addressUniqueId', 'uniqueId'],
+            _pick_first(payload, ['data.defaultCorpAddressUniqueId', 'defaultCorpAddressUniqueId'], ''),
+        )
+    ).strip() or user_addr
+    if not user_addr or not corp_addr:
+        raise ValueError('NO_DEFAULT_ADDRESS')
+    return user_addr, corp_addr
+
+
+def _submit_meican_order_for_manual(user: UserAccount, menu_item: MenuItem, namespace: str):
+    acc = UserMeicanAccount.objects.filter(user=user).first()
+    if not acc or not str(acc.access_token or '').strip():
+        raise ValueError('MEICAN_SESSION_REQUIRED')
+    ns = str(namespace or acc.account_namespace or '').strip()
+    if not ns:
+        raise ValueError('MEICAN_NAMESPACE_REQUIRED')
+    ctx = _extract_menu_item_order_context(menu_item)
+    if not ctx['tabUniqueId'] or not ctx['targetTime'] or not ctx['dishId']:
+        raise ValueError('MENU_ITEM_FORWARD_CONTEXT_MISSING')
+
+    user_addr, corp_addr = _resolve_default_address_ids(ns, str(acc.access_token or '').strip())
+    dish_for_order = int(ctx['dishId']) if str(ctx['dishId']).isdigit() else ctx['dishId']
+    form_body = urlencode(
+        {
+            'tabUniqueId': ctx['tabUniqueId'],
+            'targetTime': ctx['targetTime'],
+            'userAddressUniqueId': user_addr,
+            'corpAddressUniqueId': corp_addr,
+            'corpAddressRemark': '',
+            'order': json.dumps([{'count': 1, 'dishId': dish_for_order}], ensure_ascii=False),
+            'remarks': json.dumps([{'dishId': str(ctx['dishId']), 'remark': ''}], ensure_ascii=False),
+        }
+    )
+    try:
+        out = _forward_form_post('/api/v2.1/orders/add', form_body, access_token=str(acc.access_token or '').strip())
+    except HTTPError as e:
+        raw = e.read().decode('utf-8', errors='replace') if e.fp else ''
+        try:
+            err_obj = json.loads(raw) if raw else {}
+            msg = err_obj.get('message') or err_obj.get('error') or f'HTTP_{e.code}'
+        except Exception:
+            msg = f'HTTP_{e.code}'
+        raise ValueError(f'MEICAN_API_ERROR:{msg}')
+    except URLError:
+        raise ValueError('MEICAN_API_ERROR:NETWORK')
+
+    if isinstance(out, dict):
+        status = str(out.get('status') or '')
+        if status and status.upper() not in {'SUCCESS', 'OK'} and out.get('message'):
+            raise ValueError(f'MEICAN_API_ERROR:{out.get("message")}')
+        uid = str(
+            _pick_first(out, ['uniqueId', 'data.uniqueId', 'order.uniqueId', 'result.uniqueId', 'orderDetail.uniqueId'], '')
+        ).strip()
+        return uid
+    return ''
 
 
 def _within_auto_order_window(date_val, meal_slot):
@@ -404,6 +585,7 @@ def post_manual_order(request, user_id):
         return _resp(code=40401, message='MENU_ITEM_UNAVAILABLE')
 
     user = _ensure_user(user_id)
+    namespace = str(body.get('namespace') or '').strip()
     replace = bool(body.get('replace') or body.get('replaceOrder'))
     with transaction.atomic():
         existed_by_idem = OrderRecord.objects.filter(idempotency_key=idempotency_key).first()
@@ -417,6 +599,20 @@ def post_manual_order(request, user_id):
             else:
                 return _resp(code=40901, message='ORDER_ALREADY_EXISTS')
 
+        try:
+            meican_order_unique_id = _submit_meican_order_for_manual(user, menu_item, namespace)
+        except ValueError as e:
+            msg = str(e)
+            if msg == 'NO_DEFAULT_ADDRESS':
+                return _resp(code=40903, message='NO_DEFAULT_ADDRESS')
+            if msg == 'MEICAN_SESSION_REQUIRED':
+                return _resp(code=40102, message='MEICAN_SESSION_REQUIRED')
+            if msg == 'MEICAN_NAMESPACE_REQUIRED':
+                return _resp(code=40022, message='MEICAN_NAMESPACE_REQUIRED')
+            if msg == 'MENU_ITEM_FORWARD_CONTEXT_MISSING':
+                return _resp(code=40904, message='MENU_ITEM_FORWARD_CONTEXT_MISSING')
+            return _resp(code=50201, message=msg)
+
         order = OrderRecord.objects.create(
             user=user,
             date=date_val,
@@ -425,9 +621,9 @@ def post_manual_order(request, user_id):
             source='MANUAL',
             status='CREATED',
             idempotency_key=idempotency_key,
-            meican_order_unique_id='',
+            meican_order_unique_id=meican_order_unique_id,
         )
-    return _resp(data={'orderId': order.id, 'status': order.status})
+    return _resp(data={'orderId': order.id, 'status': order.status, 'meicanOrderUniqueId': meican_order_unique_id})
 
 
 def _internal_auth_ok(request):
@@ -439,10 +635,12 @@ def _internal_auth_ok(request):
 
 def run_auto_order_job_for_date_slot(date_val, meal_slot, *, force=False, trigger_type='MANUAL', enforce_window=True):
     """
-    创建/重建某日某餐期自动订餐任务（AutoOrderJob + AutoOrderJobItem）。
-    返回结构：{ok, code?, message?, data?}
+    执行自动下单任务：
+    - 基于 auto_order_config + 推荐结果挑选菜品
+    - 调用美餐 Forward /api/v2.1/orders/add 真正下单
+    - 回写 auto_order_job / auto_order_job_item / order_record
     """
-    if enforce_window and (not force) and (not _within_auto_order_window(date_val, meal_slot)):
+    if enforce_window and not force and not _within_auto_order_window(date_val, meal_slot):
         return {'ok': False, 'code': 40902, 'message': '超过自动下单截止时间窗口'}
 
     job, created = AutoOrderJob.objects.get_or_create(
@@ -472,6 +670,7 @@ def run_auto_order_job_for_date_slot(date_val, meal_slot, *, force=False, trigge
         Q(effective_to__isnull=True) | Q(effective_to__gte=date_val)
     )
     total = 0
+    success = 0
     failed = 0
     for cfg in cfg_qs:
         slots = _split_meal_slots(cfg.meal_slots)
@@ -491,6 +690,7 @@ def run_auto_order_job_for_date_slot(date_val, meal_slot, *, force=False, trigge
                     'fail_code': 'NO_DEFAULT_ADDRESS',
                     'fail_message': '无默认企业地址',
                     'menu_item': None,
+                    'meican_order_unique_id': '',
                 },
             )
             continue
@@ -506,6 +706,7 @@ def run_auto_order_job_for_date_slot(date_val, meal_slot, *, force=False, trigge
                     'fail_code': 'ORDER_ALREADY_EXISTS',
                     'fail_message': '该用户该餐期已存在订单',
                     'menu_item': None,
+                    'meican_order_unique_id': '',
                 },
             )
             continue
@@ -528,29 +729,70 @@ def run_auto_order_job_for_date_slot(date_val, meal_slot, *, force=False, trigge
                     'fail_code': 'MENU_ITEM_UNAVAILABLE',
                     'fail_message': '推荐菜品不可用',
                     'menu_item': rec.menu_item if rec else None,
+                    'meican_order_unique_id': '',
                 },
             )
             continue
 
-        AutoOrderJobItem.objects.update_or_create(
-            job=job,
-            user=user,
-            defaults={
-                'menu_item': rec.menu_item,
-                'status': JobItemStatus.PENDING,
-                'retry_count': 0,
-                'fail_code': '',
-                'fail_message': '',
-            },
-        )
+        menu_item = rec.menu_item
+        acc = UserMeicanAccount.objects.filter(user=user).first()
+        namespace = str((acc.account_namespace if acc else '') or '').strip()
+        try:
+            meican_order_unique_id = _submit_meican_order_for_manual(user, menu_item, namespace)
+            idem = f'auto:{job.id}:{user.id}:{date_val}:{meal_slot}:{uuid.uuid4().hex[:8]}'
+            OrderRecord.objects.create(
+                user=user,
+                date=date_val,
+                meal_slot=meal_slot,
+                menu_item=menu_item,
+                source='AUTO',
+                status='CREATED',
+                idempotency_key=idem,
+                meican_order_unique_id=meican_order_unique_id,
+            )
+            success += 1
+            AutoOrderJobItem.objects.update_or_create(
+                job=job,
+                user=user,
+                defaults={
+                    'menu_item': menu_item,
+                    'status': JobItemStatus.SUCCESS,
+                    'retry_count': 0,
+                    'fail_code': '',
+                    'fail_message': '',
+                    'meican_order_unique_id': meican_order_unique_id,
+                },
+            )
+        except ValueError as e:
+            failed += 1
+            msg = str(e)
+            fail_code = msg.split(':', 1)[0] if ':' in msg else msg
+            AutoOrderJobItem.objects.update_or_create(
+                job=job,
+                user=user,
+                defaults={
+                    'menu_item': menu_item,
+                    'status': JobItemStatus.FAILED,
+                    'retry_count': 0,
+                    'fail_code': fail_code,
+                    'fail_message': msg,
+                    'meican_order_unique_id': '',
+                },
+            )
 
     job.total_count = total
+    job.success_count = success
     job.failed_count = failed
-    job.success_count = 0
-    job.status = JobStatus.RUNNING if total > 0 else JobStatus.SUCCESS
     if total == 0:
-        job.finished_at = timezone.now()
-    job.save(update_fields=['total_count', 'failed_count', 'success_count', 'status', 'finished_at'])
+        job.status = JobStatus.SUCCESS
+    elif success == total:
+        job.status = JobStatus.SUCCESS
+    elif success > 0:
+        job.status = JobStatus.PARTIAL
+    else:
+        job.status = JobStatus.FAILED
+    job.finished_at = timezone.now()
+    job.save(update_fields=['total_count', 'success_count', 'failed_count', 'status', 'finished_at'])
     return {'ok': True, 'data': {'jobId': job.id, 'status': job.status, 'created': created or force}}
 
 
