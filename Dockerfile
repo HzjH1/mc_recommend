@@ -33,8 +33,8 @@ RUN pip3 config set global.index-url http://mirrors.cloud.tencent.com/pypi/simpl
 # 安装最新版 npm 与最新版 @qwen-code/sdk
 RUN npm install -g npm@latest @qwen-code/qwen-code@latest
 
-# 周期任务：每周日 00:05 触发一次周推荐
-RUN echo "5 0 * * 0 cd /app && /usr/bin/python3 manage.py run_weekly_recommendations --workdays 5 --top-n 3 >> /var/log/cron.log 2>&1" > /etc/crontabs/root
+# 周期任务：每周日 00:05 先生成周推荐，再触发该周午/晚自动订餐任务
+RUN echo "5 0 * * 0 cd /app && /usr/bin/python3 manage.py run_weekly_recommendations --workdays 5 --top-n 3 && /usr/bin/python3 manage.py run_weekly_auto_order_jobs --workdays 5 >> /var/log/cron.log 2>&1" > /etc/crontabs/root
 
 # 暴露端口
 # 此处端口必须与「服务设置」-「流水线」以及「手动上传代码包」部署时填写的端口一致，否则会部署失败。

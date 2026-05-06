@@ -437,27 +437,14 @@ def _internal_auth_ok(request):
     return request.headers.get('X-Internal-Token', '') == configured_token
 
 
-def post_internal_auto_order_run(request):
-    if request.method != 'POST':
-        return _resp(code=40500, message='请求方式错误，请使用POST')
-    if not _internal_auth_ok(request):
-        return _resp(code=40101, message='内部鉴权失败')
+def run_auto_order_job_for_date_slot(date_val, meal_slot, *, force=False, trigger_type='MANUAL', enforce_window=True):
+    """
+    创建/重建某日某餐期自动订餐任务（AutoOrderJob + AutoOrderJobItem）。
+    返回结构：{ok, code?, message?, data?}
+    """
+    if enforce_window and (not force) and (not _within_auto_order_window(date_val, meal_slot)):
+        return {'ok': False, 'code': 40902, 'message': '超过自动下单截止时间窗口'}
 
-    body, err = _parse_json_body(request)
-    if err:
-        return err
-
-    date_val, parse_err = _parse_date(body.get('date'))
-    if parse_err:
-        return _resp(code=40012, message=parse_err)
-    meal_slot = _normalize_meal_slot(body.get('mealSlot'))
-    if not meal_slot:
-        return _resp(code=40013, message='mealSlot仅支持LUNCH/DINNER')
-
-    trigger_type = 'MANUAL'
-    force = bool(body.get('force'))
-    if not force and not _within_auto_order_window(date_val, meal_slot):
-        return _resp(code=40902, message='超过自动下单截止时间窗口')
     job, created = AutoOrderJob.objects.get_or_create(
         date=date_val,
         meal_slot=meal_slot,
@@ -465,7 +452,7 @@ def post_internal_auto_order_run(request):
         defaults={'status': JobStatus.PENDING},
     )
     if not created and not force:
-        return _resp(data={'jobId': job.id, 'status': job.status, 'created': False})
+        return {'ok': True, 'data': {'jobId': job.id, 'status': job.status, 'created': False}}
 
     if not created and force:
         AutoOrderJobItem.objects.filter(job=job).delete()
@@ -564,7 +551,37 @@ def post_internal_auto_order_run(request):
     if total == 0:
         job.finished_at = timezone.now()
     job.save(update_fields=['total_count', 'failed_count', 'success_count', 'status', 'finished_at'])
-    return _resp(data={'jobId': job.id, 'status': job.status, 'created': created or force})
+    return {'ok': True, 'data': {'jobId': job.id, 'status': job.status, 'created': created or force}}
+
+
+def post_internal_auto_order_run(request):
+    if request.method != 'POST':
+        return _resp(code=40500, message='请求方式错误，请使用POST')
+    if not _internal_auth_ok(request):
+        return _resp(code=40101, message='内部鉴权失败')
+
+    body, err = _parse_json_body(request)
+    if err:
+        return err
+
+    date_val, parse_err = _parse_date(body.get('date'))
+    if parse_err:
+        return _resp(code=40012, message=parse_err)
+    meal_slot = _normalize_meal_slot(body.get('mealSlot'))
+    if not meal_slot:
+        return _resp(code=40013, message='mealSlot仅支持LUNCH/DINNER')
+
+    force = bool(body.get('force'))
+    out = run_auto_order_job_for_date_slot(
+        date_val,
+        meal_slot,
+        force=force,
+        trigger_type='MANUAL',
+        enforce_window=True,
+    )
+    if not out.get('ok'):
+        return _resp(code=out.get('code', 50000), message=out.get('message', '自动下单任务执行失败'))
+    return _resp(data=out['data'])
 
 
 def get_internal_auto_order_job(request, job_id):
