@@ -1,135 +1,124 @@
-# wxcloudrun-django
-[![GitHub license](https://img.shields.io/github/license/WeixinCloud/wxcloudrun-express)](https://github.com/WeixinCloud/wxcloudrun-express)
-![GitHub package.json dependency version (prod)](https://img.shields.io/badge/python-3.7.3-green)
+# mc_recommend（美餐推荐后端）
 
-微信云托管 python Django 框架模版，实现简单的计数器读写接口，使用云托管 MySQL 读写、记录计数值。
+基于 **Django 3.2** 的微信云托管后端：用户偏好、菜单快照、**规则推荐**落库、每日推荐查询、自动点餐任务与内部定时接口。小程序（如 mc1）通过 V1 API 上报美餐会话与周菜单，服务端可同步美餐 Forward 菜单并写入 MySQL。
 
-![](https://qcloudimg.tencent-cloud.cn/raw/be22992d297d1b9a1a5365e606276781.png)
+---
 
+## 功能概览
 
-## 快速开始
-前往 [微信云托管快速开始页面](https://developers.weixin.qq.com/miniprogram/dev/wxcloudrun/src/basic/guide.html)，选择相应语言的模板，根据引导完成部署。
+| 能力 | 说明 |
+|------|------|
+| 用户偏好 | `PUT /api/v1/users/<id>/preferences` |
+| 美餐会话 | `PUT /api/v1/users/<id>/meican-session`（access/refresh、namespace） |
+| 菜单周同步 | `POST /api/v1/users/<id>/menu/week-sync` → `menu_snapshot` / `menu_item`（同 `dish_id` 原地更新） |
+| 每日推荐查询 | `GET /api/v1/users/<id>/recommendations/daily`（读 `recommendation_batch` / `recommendation_result`） |
+| 规则推荐落库 | `manage.py refresh_user_recommendations`、周任务 `run_weekly_recommendations` / 内部 `weekly-run` |
+| 在线 AI 推荐（不落库） | `POST /api/recommend`（可选 OpenAI，失败回退规则） |
+| 自动点餐 | 内部任务 `POST .../internal/jobs/auto-order/run` 等 |
+| 计数器（模板遗留） | `GET/POST /api/count` |
 
-## 本地调试
-下载代码在本地调试，请参考[微信云托管本地调试指南](https://developers.weixin.qq.com/miniprogram/dev/wxcloudrun/src/guide/debug/)
+**说明**：`refresh_user_recommendations` 与落库的推荐批次使用 **`wxcloudrun/recommendation_scoring` 规则打分**，**不经过** `POST /api/recommend` 的大模型链路。
 
-## 实时开发
-代码变动时，不需要重新构建和启动容器，即可查看变动后的效果。请参考[微信云托管实时开发指南](https://developers.weixin.qq.com/miniprogram/dev/wxcloudrun/src/guide/debug/dev.html)
+---
 
-## Dockerfile最佳实践
-请参考[如何提高项目构建效率](https://developers.weixin.qq.com/miniprogram/dev/wxcloudrun/src/scene/build/speed.html)
+## 环境要求
 
+- **Python**：建议 3.8+（与云托管镜像一致即可）
+- **MySQL**：5.7+ / 8.0（`utf8mb4`）
+- 依赖安装：`pip install -r requirements.txt`
 
-## 目录结构说明
-~~~
+---
+
+## 快速开始（本地）
+
+1. 配置环境变量（至少 MySQL，见下文「环境变量」）。
+2. 数据库迁移：
+
+```bash
+python3 manage.py migrate
+```
+
+3. 启动开发服务：
+
+```bash
+python3 manage.py runserver 0.0.0.0:8000
+```
+
+远端库若缺表/缺列，可使用（详见命令文档）：
+
+- `python3 manage.py sync_missing_tables`
+- `python3 manage.py sync_missing_columns`
+
+---
+
+## 后端命令文档
+
+运维、排障、美餐 client 配置、推荐重算等：**[`docs/backend-commands.md`](docs/backend-commands.md)**
+
+---
+
+## 微信云托管部署
+
+- [微信云托管快速开始](https://developers.weixin.qq.com/miniprogram/dev/wxcloudrun/src/basic/guide.html)
+- [本地调试](https://developers.weixin.qq.com/miniprogram/dev/wxcloudrun/src/guide/debug/)
+- [实时开发](https://developers.weixin.qq.com/miniprogram/dev/wxcloudrun/src/guide/debug/dev.html)
+- [构建加速](https://developers.weixin.qq.com/miniprogram/dev/wxcloudrun/src/scene/build/speed.html)
+
+---
+
+## 目录结构（摘要）
+
+```
 .
-├── Dockerfile                  dockerfile
-├── README.md                   README.md文件
-├── container.config.json       模板部署「服务设置」初始化配置（二开请忽略）
-├── manage.py                   django项目管理文件 与项目进行交互的命令行工具集的入口
-├── requirements.txt            依赖包文件
-└── wxcloudrun                  app目录
-    ├── __init__.py             python项目必带  模块化思想
-    ├── apps.py                 自动生成文件apps.py
-    ├── asgi.py                 自动生成文件asgi.py, 异步服务网关接口
-    ├── migrations              数据移植（迁移）模块
-    ├── models.py               数据模块
-    ├── settings.py             项目的总配置文件  里面包含数据库 web应用 日志等各种配置
-    ├── templates               模版目录,包含主页index.html文件
-    ├── urls.py                 URL配置文件  Django项目中所有地址中（页面）都需要我们自己去配置其URL
-    ├── views.py                执行响应的代码所在模块  代码逻辑处理主要地点  项目大部分代码在此编写
-    └── wsgi.py                 自动生成文件wsgi.py, Web服务网关接口
-~~~
-
-
-## 服务 API 文档
-
-### `GET /api/count`
-
-获取当前计数
-
-#### 请求参数
-
-无
-
-#### 响应结果
-
-- `code`：错误码
-- `data`：当前计数值
-
-##### 响应结果示例
-
-```json
-{
-  "code": 0,
-  "data": 42
-}
+├── manage.py
+├── requirements.txt
+├── Dockerfile
+├── docs/
+│   └── backend-commands.md      # 后端命令与排障
+└── wxcloudrun/
+    ├── settings.py              # 含 MySQL、OPENAI、INTERNAL_JOB、美餐等配置
+    ├── urls.py                  # 路由（含 V1）
+    ├── views.py                 # 计数器、POST /api/recommend
+    ├── v1_views.py              # V1 用户偏好、美餐会话、菜单同步、每日推荐、内部任务
+    ├── models.py
+    ├── recommendation_service.py
+    ├── recommendation_scoring.py
+    ├── menu_sync_service.py
+    ├── meican_menu_snapshot.py  # 美餐 Forward 拉菜单（可选）
+    └── meican_client_config.py  # 美餐 client 库表解析
 ```
 
-#### 调用示例
+---
 
-```
-curl https://<云托管服务域名>/api/count
-```
+## HTTP API 一览
 
+前缀均为服务根域名，例如 `https://<你的云托管域名>`。
 
+### V1（小程序 / 推荐服务）
 
-### `POST /api/count`
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| PUT | `/api/v1/users/<user_id>/preferences` | 用户饮食偏好 |
+| GET/PUT | `/api/v1/users/<user_id>/auto-order-config` | 自动点餐配置 |
+| PUT | `/api/v1/users/<user_id>/meican-session` | 美餐登录后上报 token、namespace |
+| POST | `/api/v1/users/<user_id>/menu/week-sync` | 周菜单同步（**POST**，勿用 GET 调试） |
+| GET | `/api/v1/users/<user_id>/recommendations/daily?date=YYYY-MM-DD&namespace=...` | 当日推荐 |
+| POST | `/api/v1/users/<user_id>/orders` | 手动下单 |
+| POST | `/api/v1/internal/jobs/auto-order/run` | 内部：自动点餐任务（需 `X-Internal-Token`） |
+| GET | `/api/v1/internal/jobs/auto-order/<job_id>` | 内部：任务状态 |
+| POST | `/api/v1/internal/jobs/recommendations/weekly-run` | 内部：周推荐任务（需 `X-Internal-Token`） |
 
-更新计数，自增或者清零
+### 其他
 
-#### 请求参数
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/count` | 计数器读 |
+| POST | `/api/count` | 计数器写（模板示例） |
+| POST | `/api/recommend` | 在线 Top3 推荐（可选 AI + 规则兜底） |
 
-- `action`：`string` 类型，枚举值
-  - 等于 `"inc"` 时，表示计数加一
-  - 等于 `"clear"` 时，表示计数重置（清零）
+`POST /api/recommend` 请求体与环境变量说明见下文示例（与历史 README 一致）。
 
-##### 请求参数示例
-
-```
-{
-  "action": "inc"
-}
-```
-
-#### 响应结果
-
-- `code`：错误码
-- `data`：当前计数值
-
-##### 响应结果示例
-
-```json
-{
-  "code": 0,
-  "data": 42
-}
-```
-
-#### 调用示例
-
-```
-curl -X POST -H 'content-type: application/json' -d '{"action": "inc"}' https://<云托管服务域名>/api/count
-```
-
-### `POST /api/recommend`
-
-根据用户饮食偏好和菜单列表，返回 AI 推荐的 Top3 菜品。
-
-#### 请求参数
-
-- `personalPreference`：`object`，用户偏好
-  - 支持字段（中英文都可）：
-    - 是否吃辣 / `isSpicy`
-    - 是否清真 / `isHalal`
-    - 是否正在减脂 / `isLosingFat`
-    - 喜欢吃粉面 / `preferNoodle`
-    - 喜欢吃饭 / `preferRice`
-    - 其他补充 / `other`
-- `menuList`：`array`，菜品列表
-  - 兼容直接传 `othersRegularDishList`
-
-##### 请求参数示例
+#### `POST /api/recommend` 请求示例
 
 ```json
 {
@@ -154,50 +143,45 @@ curl -X POST -H 'content-type: application/json' -d '{"action": "inc"}' https://
 }
 ```
 
-#### 响应结果
+#### `POST /api/recommend` 环境变量
 
-- `code`：错误码，`0` 为成功
-- `data`：推荐结果数组（最多 3 条）
-  - `id`：菜品 ID
-  - `name`：菜名
-  - `restaurant`：商家信息
-  - `score`：规则评分（用于兜底排序）
-  - `reason`：推荐理由
+- `OPENAI_API_KEY`：可选；不配则走规则排序
+- `OPENAI_BASE_URL`：可选
+- `OPENAI_MODEL`：可选
+- `OPENAI_TIMEOUT_SECONDS`：可选
 
-##### 响应结果示例
+---
 
-```json
-{
-  "code": 0,
-  "data": [
-    {
-      "id": 308630423,
-      "name": "新鲜瘦肉汤米粉(中融专供)",
-      "restaurant": {
-        "name": "潮品鲜(荷光路店)",
-        "available": true
-      },
-      "score": 4,
-      "reason": "减脂期优先清淡高蛋白；主食偏好粉面"
-    }
-  ]
-}
-```
+## 环境变量（核心）
 
-#### 环境变量
+### MySQL（必填）
 
-- `OPENAI_API_KEY`：必填，AI 服务密钥
-- `OPENAI_BASE_URL`：可选，默认 `https://api.openai.com/v1`
-- `OPENAI_MODEL`：可选，默认 `gpt-4o-mini`
-- `OPENAI_TIMEOUT_SECONDS`：可选，请求超时秒数，默认 `15`
+- `MYSQL_ADDRESS`：形如 `host:3306`
+- `MYSQL_USERNAME`
+- `MYSQL_PASSWORD`
+- `MYSQL_DATABASE`
 
-## 使用注意
-如果不是通过微信云托管控制台部署模板代码，而是自行复制/下载模板代码后，手动新建一个服务并部署，需要在「服务设置」中补全以下环境变量，才可正常使用，否则会引发无法连接数据库，进而导致部署失败。
-- MYSQL_ADDRESS
-- MYSQL_PASSWORD
-- MYSQL_USERNAME
-以上三个变量的值请按实际情况填写。如果使用云托管内MySQL，可以在控制台MySQL页面获取相关信息。
+### 内部任务鉴权（可选）
 
+- `INTERNAL_JOB_TOKEN`：与请求头 `X-Internal-Token` 一致时，才允许调用内部 job 接口
+
+### 周推荐开关（可选）
+
+- `RECOMMENDATION_WEEKLY_REQUIRE_SUNDAY`：`1` / `true` / `yes` 时仅周日允许 `weekly-run`（防误触）
+
+### 美餐 Forward（服务端拉菜单 / 换票，可选）
+
+- 优先：**库表** `meican_client_config`（`manage.py set_meican_client_config`）
+- 兜底：`MEICAN_FORWARD_CLIENT_ID` / `MEICAN_FORWARD_CLIENT_SECRET`，及可选 `MEICAN_GRAPHQL_*`、`MEICAN_FORWARD_USER_AGENT`、`MEICAN_FORWARD_REFERER`、`MEICAN_X_MC_DEVICE`
+
+详见 `wxcloudrun/settings.py` 与 [`docs/backend-commands.md`](docs/backend-commands.md)。
+
+### 自动点餐截止时间（可选）
+
+- `AUTO_ORDER_LUNCH_DEADLINE`（默认 `10:30`）
+- `AUTO_ORDER_DINNER_DEADLINE`（默认 `16:30`）
+
+---
 
 ## License
 

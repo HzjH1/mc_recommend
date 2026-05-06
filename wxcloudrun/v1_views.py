@@ -404,13 +404,18 @@ def post_manual_order(request, user_id):
         return _resp(code=40401, message='MENU_ITEM_UNAVAILABLE')
 
     user = _ensure_user(user_id)
+    replace = bool(body.get('replace') or body.get('replaceOrder'))
     with transaction.atomic():
         existed_by_idem = OrderRecord.objects.filter(idempotency_key=idempotency_key).first()
         if existed_by_idem:
             return _resp(data={'orderId': existed_by_idem.id, 'status': existed_by_idem.status, 'idempotent': True})
 
-        if OrderRecord.objects.filter(user=user, date=date_val, meal_slot=meal_slot).exists():
-            return _resp(code=40901, message='ORDER_ALREADY_EXISTS')
+        existing_slot = OrderRecord.objects.filter(user=user, date=date_val, meal_slot=meal_slot).first()
+        if existing_slot:
+            if replace:
+                existing_slot.delete()
+            else:
+                return _resp(code=40901, message='ORDER_ALREADY_EXISTS')
 
         order = OrderRecord.objects.create(
             user=user,
