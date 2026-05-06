@@ -29,7 +29,7 @@ RUN pip3 config set global.index-url http://mirrors.cloud.tencent.com/pypi/simpl
 && pip3 install --break-system-packages --no-cache-dir --user -r requirements.txt
 
 # 安装最新版 npm 与最新版 @qwen-code/sdk
-RUN npm install -g npm@latest @qwen-code/sdk@latest
+RUN npm install -g npm@latest @qwen-code/qwen-code@latest
 
 # 暴露端口
 # 此处端口必须与「服务设置」-「流水线」以及「手动上传代码包」部署时填写的端口一致，否则会部署失败。
