@@ -610,8 +610,12 @@ def put_user_meican_session(request, user_id):
     ).strip()
     email = str(body.get('meicanEmail') or body.get('meican_email') or '').strip()
     namespace_in = str(body.get('accountNamespace') or body.get('account_namespace') or '').strip()
+    namespace_lunch_in = str(body.get('accountNamespaceLunch') or body.get('account_namespace_lunch') or '').strip()
+    namespace_dinner_in = str(body.get('accountNamespaceDinner') or body.get('account_namespace_dinner') or '').strip()
     # 请求未带 namespace 时保留库内原值，避免被刷成空导致推荐批次对不上
     namespace = namespace_in or (existing.account_namespace if existing else '')
+    namespace_lunch = namespace_lunch_in or (existing.account_namespace_lunch if existing else '') or namespace
+    namespace_dinner = namespace_dinner_in or (existing.account_namespace_dinner if existing else '') or namespace
 
     obj, _ = UserMeicanAccount.objects.update_or_create(
         user=user,
@@ -622,6 +626,8 @@ def put_user_meican_session(request, user_id):
             'refresh_token': refresh,
             'token_expire_at': token_expire_at,
             'account_namespace': namespace,
+            'account_namespace_lunch': namespace_lunch,
+            'account_namespace_dinner': namespace_dinner,
             'is_bound': 1,
         },
     )
@@ -785,6 +791,13 @@ def post_manual_order(request, user_id):
     selected_user_addr = str(body.get('userAddressUniqueId') or '').strip()
     selected_corp_addr = str(body.get('corpAddressUniqueId') or body.get('defaultCorpAddressId') or '').strip()
     replace = bool(body.get('replace') or body.get('replaceOrder'))
+    acc = UserMeicanAccount.objects.filter(user=user).first()
+    if not namespace and acc:
+        namespace = (
+            str(acc.account_namespace_lunch or '').strip()
+            if meal_slot == MealSlot.LUNCH
+            else str(acc.account_namespace_dinner or '').strip()
+        ) or str(acc.account_namespace or '').strip()
     with transaction.atomic():
         existed_by_idem = OrderRecord.objects.filter(idempotency_key=idempotency_key).first()
         if existed_by_idem:
@@ -977,7 +990,14 @@ def run_auto_order_job_for_date_slot(date_val, meal_slot, *, force=False, trigge
 
         menu_item = rec.menu_item
         acc = UserMeicanAccount.objects.filter(user=user).first()
-        namespace = str((acc.account_namespace if acc else '') or '').strip()
+        namespace = ''
+        if acc:
+            if meal_slot == MealSlot.LUNCH:
+                namespace = str(acc.account_namespace_lunch or '').strip()
+            else:
+                namespace = str(acc.account_namespace_dinner or '').strip()
+            if not namespace:
+                namespace = str(acc.account_namespace or '').strip()
         try:
             meican_order_unique_id = _submit_meican_order_for_manual(user, menu_item, namespace)
             idem = f'auto:{job.id}:{user.id}:{date_val}:{meal_slot}:{uuid.uuid4().hex[:8]}'

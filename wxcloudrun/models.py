@@ -89,6 +89,8 @@ class UserMeicanAccount(models.Model):
     refresh_token = models.CharField(max_length=512, blank=True, default='')
     token_expire_at = models.DateTimeField(null=True, blank=True)
     account_namespace = models.CharField(max_length=64, blank=True, default='')
+    account_namespace_lunch = models.CharField(max_length=64, blank=True, default='')
+    account_namespace_dinner = models.CharField(max_length=64, blank=True, default='')
     is_bound = models.SmallIntegerField(default=0)
     updated_at = models.DateTimeField(auto_now=True)
 
