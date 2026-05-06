@@ -3,8 +3,10 @@
 # 已知alpine镜像与pytorch有兼容性问题会导致构建失败，如需使用pytorch请务必按需更换基础镜像。
 FROM node:22-alpine3.20
 
-# 容器默认时区为UTC，如需使用上海时间请启用以下时区设置命令
-# RUN apk add tzdata && cp /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && echo Asia/Shanghai > /etc/timezone
+# 容器时区调整为上海时间，保证定时任务按本地时间触发
+RUN apk add --no-cache tzdata \
+&& cp /usr/share/zoneinfo/Asia/Shanghai /etc/localtime \
+&& echo Asia/Shanghai > /etc/timezone
 
 # 使用 HTTPS 协议访问容器云调用证书安装，并补齐 Python 运行环境
 RUN apk add ca-certificates
@@ -31,6 +33,9 @@ RUN pip3 config set global.index-url http://mirrors.cloud.tencent.com/pypi/simpl
 # 安装最新版 npm 与最新版 @qwen-code/sdk
 RUN npm install -g npm@latest @qwen-code/qwen-code@latest
 
+# 周期任务：每周日 00:05 触发一次周推荐
+RUN echo "5 0 * * 0 cd /app && /usr/bin/python3 manage.py run_weekly_recommendations --workdays 5 --top-n 3 >> /var/log/cron.log 2>&1" > /etc/crontabs/root
+
 # 暴露端口
 # 此处端口必须与「服务设置」-「流水线」以及「手动上传代码包」部署时填写的端口一致，否则会部署失败。
 EXPOSE 80
@@ -38,4 +43,4 @@ EXPOSE 80
 # 执行启动命令
 # 写多行独立的CMD命令是错误写法！只有最后一行CMD命令会被执行，之前的都会被忽略，导致业务报错。
 # 请参考[Docker官方文档之CMD命令](https://docs.docker.com/engine/reference/builder/#cmd)
-CMD ["python3", "manage.py", "runserver", "0.0.0.0:80"]
+CMD ["sh", "-c", "touch /var/log/cron.log && crond -l 2 && python3 manage.py runserver 0.0.0.0:80"]
