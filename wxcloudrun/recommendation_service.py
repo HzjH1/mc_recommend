@@ -2,7 +2,7 @@
 推荐结果落库：按 menu_snapshot / menu_item 为单用户生成 recommendation_batch + recommendation_result。
 """
 from datetime import date, timedelta
-from typing import Optional, Set
+from typing import List, Optional, Set
 
 from django.db import transaction
 from django.db.models import Max
@@ -182,6 +182,38 @@ def resolve_week_start_monday(today: Optional[date], week_start: Optional[date])
     return today - timedelta(days=today.weekday())
 
 
+def resolve_snapshot_recommendation_dates(
+    namespace: str,
+    monday: date,
+    *,
+    fallback_workdays: int = 5,
+) -> List[date]:
+    """
+    优先按 menu_snapshot 中该自然周已存在的日期推荐：
+    - 周范围：monday ~ monday+6
+    - 返回去重后的升序日期
+    - 若该周无任何快照，则回退到 monday 起连续 fallback_workdays 天
+    """
+    ns = (namespace or '').strip()
+    if not ns:
+        return [monday + timedelta(days=i) for i in range(max(1, int(fallback_workdays)))]
+
+    week_end = monday + timedelta(days=6)
+    dates = list(
+        MenuSnapshot.objects.filter(
+            namespace=ns,
+            date__gte=monday,
+            date__lte=week_end,
+        )
+        .order_by('date')
+        .values_list('date', flat=True)
+        .distinct()
+    )
+    if dates:
+        return dates
+    return [monday + timedelta(days=i) for i in range(max(1, int(fallback_workdays)))]
+
+
 def run_weekly_recommendation_job(
     *,
     week_start: Optional[date] = None,
@@ -192,7 +224,8 @@ def run_weekly_recommendation_job(
 ):
     """
     每周推荐任务：对每个已绑定 namespace 且有偏好的用户，
-    对 week_start 起的连续 workdays 个工作日、午/晚各生成推荐。
+    优先按 menu_snapshot 中「该自然周已有日期」生成推荐（兼容调休日，如周六）。
+    若该周无快照，再回退为 week_start 起连续 workdays 天。
     """
     monday = resolve_week_start_monday(None, week_start)
     accounts = UserMeicanAccount.objects.exclude(account_namespace='').select_related('user')
@@ -207,6 +240,7 @@ def run_weekly_recommendation_job(
         'skipped': [],
     }
 
+    namespace_dates_cache = {}
     for acc in accounts.iterator():
         user = acc.user
         ns = (acc.account_namespace or '').strip()
@@ -217,9 +251,13 @@ def run_weekly_recommendation_job(
             summary['skipped'].append({'userId': user.id, 'reason': '无 user_preference'})
             continue
 
+        dates = namespace_dates_cache.get(ns)
+        if dates is None:
+            dates = resolve_snapshot_recommendation_dates(ns, monday, fallback_workdays=workdays)
+            namespace_dates_cache[ns] = dates
+
         meican_sync_dates: Set[date] = set()
-        for i in range(workdays):
-            d = monday + timedelta(days=i)
+        for d in dates:
             for meal_slot in (MealSlot.LUNCH, MealSlot.DINNER):
                 out = refresh_recommendations_for_user_slot(
                     user,
@@ -240,4 +278,8 @@ def run_weekly_recommendation_job(
                         'reason': out.get('skip', 'unknown'),
                     })
 
+    summary['resolvedDatesByNamespace'] = {
+        ns: [str(d) for d in dates]
+        for ns, dates in namespace_dates_cache.items()
+    }
     return summary

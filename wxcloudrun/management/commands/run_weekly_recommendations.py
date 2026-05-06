@@ -8,7 +8,7 @@ from wxcloudrun.recommendation_service import run_weekly_recommendation_job
 class Command(BaseCommand):
     help = (
         '每周推荐任务（与「每周日定时」配套）：为已绑定 namespace 且有偏好的用户，'
-        '生成从「下周一」或 --week-start 起的 5 个工作日、午/晚推荐。'
+        '优先按 menu_snapshot 的该自然周日期（兼容调休日周六）生成午/晚推荐。'
     )
 
     def add_arguments(self, parser):
