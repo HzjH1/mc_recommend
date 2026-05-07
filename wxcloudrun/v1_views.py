@@ -1070,9 +1070,9 @@ def run_auto_order_job_for_date_slot(date_val, meal_slot, *, force=False, trigge
     total = 0
     success = 0
     failed = 0
-    min_submit_interval_seconds = float(getattr(settings, 'AUTO_ORDER_SUBMIT_INTERVAL_SECONDS', 1.2))
-    too_fast_max_retries = max(0, int(getattr(settings, 'AUTO_ORDER_TOO_FAST_MAX_RETRIES', 2)))
-    too_fast_retry_delay_seconds = float(getattr(settings, 'AUTO_ORDER_TOO_FAST_RETRY_DELAY_SECONDS', 1.5))
+    min_submit_interval_seconds = float(getattr(settings, 'AUTO_ORDER_SUBMIT_INTERVAL_SECONDS', 2))
+    too_fast_max_retries = max(0, int(getattr(settings, 'AUTO_ORDER_TOO_FAST_MAX_RETRIES', 2.5)))
+    too_fast_retry_delay_seconds = float(getattr(settings, 'AUTO_ORDER_TOO_FAST_RETRY_DELAY_SECONDS', 3))
     last_submit_ts = 0.0
     for cfg in cfg_qs:
         slots = _split_meal_slots(cfg.meal_slots)

@@ -45,6 +45,9 @@ urlpatterns = (
     # V1-每周推荐（定时触发：每周日）
     url(r'^^api/v1/internal/jobs/recommendations/weekly-run(/)?$', v1_views.post_internal_weekly_recommendations_run),
 
+    # Web SPA（Vue/Vite 构建产物在 /static/web）
+    url(r'^^web(/.*)?$', views.web_index),
+
     # 获取主页
     url(r'(/)?$', views.index),
 )

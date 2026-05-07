@@ -1,11 +1,13 @@
 import json
 import logging
 import re
+from pathlib import Path
 from urllib import request as urllib_request
 from urllib import error as urllib_error
 
 from django.conf import settings
 from django.http import JsonResponse
+from django.http import HttpResponse
 from django.shortcuts import render
 from wxcloudrun.models import Counter
 
@@ -194,6 +196,19 @@ def index(request, _):
     """
 
     return render(request, 'index.html')
+
+
+def web_index(request, *_args, **_kwargs):
+    """
+    Vue Web SPA 入口：构建产物位于 wxcloudrun/static/web/index.html（Vite 输出）。
+    """
+    try:
+        p = Path(settings.BASE_DIR) / 'wxcloudrun' / 'static' / 'web' / 'index.html'
+        html = p.read_text(encoding='utf-8')
+        return HttpResponse(html, content_type='text/html; charset=utf-8')
+    except Exception as exc:
+        logger.error('web_index render failed: %s', exc)
+        return HttpResponse('web build not found', status=404, content_type='text/plain; charset=utf-8')
 
 
 def counter(request, _):
