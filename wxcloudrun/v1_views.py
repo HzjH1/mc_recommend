@@ -1,5 +1,6 @@
 import json
 import logging
+import time as pytime
 import uuid
 from datetime import datetime, time, timedelta
 from urllib.error import HTTPError, URLError
@@ -888,10 +889,12 @@ def post_manual_order(request, user_id):
         if existed_by_idem:
             return _resp(data={'orderId': existed_by_idem.id, 'status': existed_by_idem.status, 'idempotent': True})
 
-        existing_slot = OrderRecord.objects.filter(user=user, date=date_val, meal_slot=meal_slot, status='CREATED').first()
-        if existing_slot:
+        existing_created = OrderRecord.objects.filter(
+            user=user, date=date_val, meal_slot=meal_slot, status='CREATED'
+        ).first()
+        if existing_created:
             if replace:
-                existing_slot.delete()
+                existing_created.delete()
             else:
                 return _resp(code=40901, message='ORDER_ALREADY_EXISTS')
 
@@ -935,16 +938,31 @@ def post_manual_order(request, user_id):
 
         _save_default_corp_address(user, used_corp_addr, meal_slot)
 
-        order = OrderRecord.objects.create(
-            user=user,
-            date=date_val,
-            meal_slot=meal_slot,
-            menu_item=menu_item,
-            source='MANUAL',
-            status='CREATED',
-            idempotency_key=idempotency_key,
-            meican_order_unique_id=meican_order_unique_id,
+        existing_any = (
+            OrderRecord.objects.filter(user=user, date=date_val, meal_slot=meal_slot)
+            .order_by('-id')
+            .first()
         )
+        if existing_any:
+            # 复用同 user/date/slot 记录，避免触发 uk_user_date_slot 唯一键冲突
+            existing_any.menu_item = menu_item
+            existing_any.source = 'MANUAL'
+            existing_any.status = 'CREATED'
+            existing_any.idempotency_key = idempotency_key
+            existing_any.meican_order_unique_id = meican_order_unique_id
+            existing_any.save(update_fields=['menu_item', 'source', 'status', 'idempotency_key', 'meican_order_unique_id'])
+            order = existing_any
+        else:
+            order = OrderRecord.objects.create(
+                user=user,
+                date=date_val,
+                meal_slot=meal_slot,
+                menu_item=menu_item,
+                source='MANUAL',
+                status='CREATED',
+                idempotency_key=idempotency_key,
+                meican_order_unique_id=meican_order_unique_id,
+            )
         logger.info(
             'manual_order.submit_success user_id=%s order_id=%s date=%s meal_slot=%s menu_item_id=%s meican_order_unique_id=%s',
             user.id,
@@ -1008,6 +1026,11 @@ def _internal_auth_ok(request):
     return request.headers.get('X-Internal-Token', '') == configured_token
 
 
+def _is_too_fast_error(msg: str) -> bool:
+    text = str(msg or '')
+    return ('TOO_FAST' in text) or ('下单过快' in text)
+
+
 def run_auto_order_job_for_date_slot(date_val, meal_slot, *, force=False, trigger_type='MANUAL', enforce_window=True):
     """
     执行自动下单任务：
@@ -1047,6 +1070,10 @@ def run_auto_order_job_for_date_slot(date_val, meal_slot, *, force=False, trigge
     total = 0
     success = 0
     failed = 0
+    min_submit_interval_seconds = float(getattr(settings, 'AUTO_ORDER_SUBMIT_INTERVAL_SECONDS', 1.2))
+    too_fast_max_retries = max(0, int(getattr(settings, 'AUTO_ORDER_TOO_FAST_MAX_RETRIES', 2)))
+    too_fast_retry_delay_seconds = float(getattr(settings, 'AUTO_ORDER_TOO_FAST_RETRY_DELAY_SECONDS', 1.5))
+    last_submit_ts = 0.0
     for cfg in cfg_qs:
         slots = _split_meal_slots(cfg.meal_slots)
         if meal_slot not in slots:
@@ -1110,24 +1137,62 @@ def run_auto_order_job_for_date_slot(date_val, meal_slot, *, force=False, trigge
             if not namespace:
                 namespace = str(acc.account_namespace or '').strip()
         try:
-            meican_order_unique_id, _, _ = _submit_meican_order_for_manual(
-                user,
-                menu_item,
-                namespace,
-                selected_user_addr='',
-                selected_corp_addr=str(default_addr or '').strip(),
-            )
+            meican_order_unique_id = ''
+            for attempt in range(too_fast_max_retries + 1):
+                now_ts = pytime.time()
+                wait_seconds = max(0.0, min_submit_interval_seconds - (now_ts - last_submit_ts))
+                if wait_seconds > 0:
+                    pytime.sleep(wait_seconds)
+                try:
+                    meican_order_unique_id, _, _ = _submit_meican_order_for_manual(
+                        user,
+                        menu_item,
+                        namespace,
+                        selected_user_addr='',
+                        selected_corp_addr=str(default_addr or '').strip(),
+                    )
+                    last_submit_ts = pytime.time()
+                    break
+                except ValueError as e:
+                    last_submit_ts = pytime.time()
+                    msg = str(e)
+                    if _is_too_fast_error(msg) and attempt < too_fast_max_retries:
+                        retry_wait = too_fast_retry_delay_seconds * (attempt + 1)
+                        logger.warning(
+                            'auto_order.too_fast_retry user_id=%s date=%s meal_slot=%s attempt=%s wait_seconds=%s',
+                            user.id,
+                            str(date_val),
+                            meal_slot,
+                            attempt + 1,
+                            retry_wait,
+                        )
+                        pytime.sleep(retry_wait)
+                        continue
+                    raise
             idem = f'auto:{job.id}:{user.id}:{date_val}:{meal_slot}:{uuid.uuid4().hex[:8]}'
-            OrderRecord.objects.create(
-                user=user,
-                date=date_val,
-                meal_slot=meal_slot,
-                menu_item=menu_item,
-                source='AUTO',
-                status='CREATED',
-                idempotency_key=idem,
-                meican_order_unique_id=meican_order_unique_id,
+            reused = (
+                OrderRecord.objects.filter(user=user, date=date_val, meal_slot=meal_slot)
+                .order_by('-id')
+                .first()
             )
+            if reused:
+                reused.menu_item = menu_item
+                reused.source = 'AUTO'
+                reused.status = 'CREATED'
+                reused.idempotency_key = idem
+                reused.meican_order_unique_id = meican_order_unique_id
+                reused.save(update_fields=['menu_item', 'source', 'status', 'idempotency_key', 'meican_order_unique_id'])
+            else:
+                OrderRecord.objects.create(
+                    user=user,
+                    date=date_val,
+                    meal_slot=meal_slot,
+                    menu_item=menu_item,
+                    source='AUTO',
+                    status='CREATED',
+                    idempotency_key=idem,
+                    meican_order_unique_id=meican_order_unique_id,
+                )
             success += 1
             AutoOrderJobItem.objects.update_or_create(
                 job=job,
