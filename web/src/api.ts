@@ -7,18 +7,40 @@ type ApiResponse<T> = {
 
 type ApiService = 'backend' | 'meican';
 
+type WebRuntimeConfig = {
+  backendApiBase?: string;
+  meicanApiBase?: string;
+};
+
+declare global {
+  interface Window {
+    __MEAL_HELPER_RUNTIME_CONFIG__?: WebRuntimeConfig;
+  }
+}
+
 function normalizeBase(base?: string) {
   return `${base || ''}`.trim().replace(/\/$/, '');
 }
 
+function resolveRuntimeConfig(): WebRuntimeConfig {
+  if (typeof window === 'undefined') {
+    return {};
+  }
+  return window.__MEAL_HELPER_RUNTIME_CONFIG__ || {};
+}
+
 function resolveServiceBase(service: ApiService) {
+  const runtimeConfig = resolveRuntimeConfig();
   if (service === 'meican') {
     return (
+      normalizeBase(runtimeConfig.meicanApiBase) ||
+      normalizeBase(runtimeConfig.backendApiBase) ||
       normalizeBase(import.meta.env.VITE_MEICAN_API_BASE as string | undefined) ||
       normalizeBase(import.meta.env.VITE_API_BASE as string | undefined)
     );
   }
   return (
+    normalizeBase(runtimeConfig.backendApiBase) ||
     normalizeBase(import.meta.env.VITE_BACKEND_API_BASE as string | undefined) ||
     normalizeBase(import.meta.env.VITE_RECOMMEND_API_BASE as string | undefined) ||
     normalizeBase(import.meta.env.VITE_API_BASE as string | undefined)

@@ -19,6 +19,24 @@ def _json_rsp(payload):
     return JsonResponse(payload, json_dumps_params={'ensure_ascii': False})
 
 
+def _normalize_base_url(value):
+    return str(value or '').strip().rstrip('/')
+
+
+def _build_web_runtime_config(request):
+    backend_api_base = _normalize_base_url(getattr(settings, 'WEB_BACKEND_API_BASE', ''))
+    meican_api_base = _normalize_base_url(getattr(settings, 'WEB_MEICAN_API_BASE', ''))
+    request_origin = _normalize_base_url(request.build_absolute_uri('/'))
+    if not backend_api_base:
+        backend_api_base = request_origin
+    if not meican_api_base:
+        meican_api_base = backend_api_base
+    return {
+        'backendApiBase': backend_api_base,
+        'meicanApiBase': meican_api_base,
+    }
+
+
 def _normalize_bool(value):
     if isinstance(value, bool):
         return value
@@ -205,6 +223,19 @@ def web_index(request, *_args, **_kwargs):
     try:
         p = Path(settings.BASE_DIR) / 'wxcloudrun' / 'static' / 'web' / 'index.html'
         html = p.read_text(encoding='utf-8')
+        runtime_config_json = json.dumps(
+            _build_web_runtime_config(request),
+            ensure_ascii=False,
+        ).replace('</', '<\\/')
+        runtime_config_script = (
+            '<script>'
+            f'window.__MEAL_HELPER_RUNTIME_CONFIG__ = {runtime_config_json};'
+            '</script>'
+        )
+        if '</head>' in html:
+            html = html.replace('</head>', f'  {runtime_config_script}\n</head>', 1)
+        else:
+            html = f'{runtime_config_script}\n{html}'
         return HttpResponse(html, content_type='text/html; charset=utf-8')
     except Exception as exc:
         logger.error('web_index render failed: %s', exc)

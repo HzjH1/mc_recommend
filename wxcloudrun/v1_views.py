@@ -1084,7 +1084,7 @@ def _choose_meican_account_login(login_payload, phone=''):
     return session
 
 
-def post_meican_send_phone_verification_code(request):
+def post_meican_send_phone_verification_code(request, *_args, **_kwargs):
     if request.method != 'POST':
         return _resp(code=40500, message='请求方式错误，请使用POST')
     body, err = _parse_json_body(request)
@@ -1105,7 +1105,7 @@ def post_meican_send_phone_verification_code(request):
         return _resp(code=50211, message=f'MEICAN_SEND_CODE_FAILED:{exc}')
 
 
-def post_meican_phone_login(request):
+def post_meican_phone_login(request, *_args, **_kwargs):
     if request.method != 'POST':
         return _resp(code=40500, message='请求方式错误，请使用POST')
     body, err = _parse_json_body(request)

@@ -218,6 +218,8 @@ MEICAN_GRAPHQL_CLIENT_ID = os.environ.get('MEICAN_GRAPHQL_CLIENT_ID', 'WYAiIJZPc
 MEICAN_GRAPHQL_CLIENT_SECRET = os.environ.get('MEICAN_GRAPHQL_CLIENT_SECRET', 'WbRV03U0MyQzRhXrvXhyopkavkIRaBg')
 MEICAN_GRAPHQL_APP = os.environ.get('MEICAN_GRAPHQL_APP', 'meican/web-pc (prod;4.90.1;sys;main)')
 MEICAN_GRAPHQL_REFERER = os.environ.get('MEICAN_GRAPHQL_REFERER', 'https://www.meican.com/').strip()
+WEB_BACKEND_API_BASE = os.environ.get('WEB_BACKEND_API_BASE', '').strip().rstrip('/')
+WEB_MEICAN_API_BASE = os.environ.get('WEB_MEICAN_API_BASE', '').strip().rstrip('/')
 # 与小程序 wx.request 实际行为接近：桌面 Chrome UA 易被美餐返回空列表；留空则用下方默认「类微信」UA
 _default_meican_ua = (
     'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) '
