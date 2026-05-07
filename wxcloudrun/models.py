@@ -121,6 +121,8 @@ class AutoOrderConfig(models.Model):
     meal_slots = models.CharField(max_length=64, blank=True, default='')
     strategy = models.CharField(max_length=32, default='TOP1')
     default_corp_address_id = models.CharField(max_length=64, blank=True, default='')
+    default_corp_address_id_lunch = models.CharField(max_length=64, blank=True, default='')
+    default_corp_address_id_dinner = models.CharField(max_length=64, blank=True, default='')
     effective_from = models.DateField(null=True, blank=True)
     effective_to = models.DateField(null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True)

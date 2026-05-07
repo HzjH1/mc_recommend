@@ -339,15 +339,32 @@ def _fetch_address_options(namespace: str, access_token: str):
     return uniq
 
 
-def _save_default_corp_address(user: UserAccount, corp_address_id: str):
+def _save_default_corp_address(user: UserAccount, corp_address_id: str, meal_slot: str = ''):
     cid = str(corp_address_id or '').strip()
     if not cid:
         return
+    meal_slot = str(meal_slot or '').upper().strip()
     cfg = AutoOrderConfig.objects.filter(user=user).first()
     if cfg:
+        changed = False
         if cfg.default_corp_address_id != cid:
             cfg.default_corp_address_id = cid
-            cfg.save(update_fields=['default_corp_address_id', 'updated_at'])
+            changed = True
+        if meal_slot == MealSlot.LUNCH and cfg.default_corp_address_id_lunch != cid:
+            cfg.default_corp_address_id_lunch = cid
+            changed = True
+        if meal_slot == MealSlot.DINNER and cfg.default_corp_address_id_dinner != cid:
+            cfg.default_corp_address_id_dinner = cid
+            changed = True
+        if changed:
+            cfg.save(
+                update_fields=[
+                    'default_corp_address_id',
+                    'default_corp_address_id_lunch',
+                    'default_corp_address_id_dinner',
+                    'updated_at',
+                ]
+            )
         return
     AutoOrderConfig.objects.create(
         user=user,
@@ -355,6 +372,8 @@ def _save_default_corp_address(user: UserAccount, corp_address_id: str):
         meal_slots='LUNCH,DINNER',
         strategy='TOP1',
         default_corp_address_id=cid,
+        default_corp_address_id_lunch=cid if meal_slot == MealSlot.LUNCH else '',
+        default_corp_address_id_dinner=cid if meal_slot == MealSlot.DINNER else '',
         effective_from=timezone.now().date(),
         effective_to=None,
     )
@@ -518,6 +537,18 @@ def put_auto_order_config(request, user_id):
             return _resp(code=40006, message=parse_err)
 
     user = _ensure_user(user_id)
+    addr_lunch = str(
+        body.get('defaultCorpAddressIdLunch')
+        or body.get('default_corp_address_id_lunch')
+        or body.get('defaultCorpAddressId')
+        or ''
+    ).strip()
+    addr_dinner = str(
+        body.get('defaultCorpAddressIdDinner')
+        or body.get('default_corp_address_id_dinner')
+        or body.get('defaultCorpAddressId')
+        or ''
+    ).strip()
     obj, _ = AutoOrderConfig.objects.update_or_create(
         user=user,
         defaults={
@@ -525,6 +556,8 @@ def put_auto_order_config(request, user_id):
             'meal_slots': ','.join(slots),
             'strategy': str(body.get('strategy') or 'TOP1'),
             'default_corp_address_id': str(body.get('defaultCorpAddressId') or ''),
+            'default_corp_address_id_lunch': addr_lunch,
+            'default_corp_address_id_dinner': addr_dinner,
             'effective_from': effective_from,
             'effective_to': effective_to,
         },
@@ -556,6 +589,8 @@ def get_auto_order_config(request, user_id):
             'mealSlots': slots,
             'strategy': obj.strategy or 'TOP1',
             'defaultCorpAddressId': obj.default_corp_address_id or '',
+            'defaultCorpAddressIdLunch': (obj.default_corp_address_id_lunch or obj.default_corp_address_id or ''),
+            'defaultCorpAddressIdDinner': (obj.default_corp_address_id_dinner or obj.default_corp_address_id or ''),
             'effectiveFrom': obj.effective_from.isoformat() if obj.effective_from else None,
             'effectiveTo': obj.effective_to.isoformat() if obj.effective_to else None,
         }
@@ -748,8 +783,16 @@ def get_user_order_addresses(request, user_id):
         options = _fetch_address_options(namespace, str(acc.access_token or '').strip())
     except Exception as e:
         return _resp(code=50201, message=f'ADDRESS_FETCH_FAILED:{e}')
-
-    selected = str(AutoOrderConfig.objects.filter(user=user).values_list('default_corp_address_id', flat=True).first() or '').strip()
+    meal_slot = _normalize_meal_slot(request.GET.get('mealSlot'))
+    cfg = AutoOrderConfig.objects.filter(user=user).first()
+    selected = ''
+    if cfg:
+        if meal_slot == MealSlot.LUNCH:
+            selected = str(cfg.default_corp_address_id_lunch or cfg.default_corp_address_id or '').strip()
+        elif meal_slot == MealSlot.DINNER:
+            selected = str(cfg.default_corp_address_id_dinner or cfg.default_corp_address_id or '').strip()
+        else:
+            selected = str(cfg.default_corp_address_id or '').strip()
     return _resp(
         data={
             'namespace': namespace,
@@ -848,7 +891,7 @@ def post_manual_order(request, user_id):
                 return _resp(code=40904, message='MENU_ITEM_FORWARD_CONTEXT_MISSING')
             return _resp(code=50201, message=msg)
 
-        _save_default_corp_address(user, used_corp_addr)
+        _save_default_corp_address(user, used_corp_addr, meal_slot)
 
         order = OrderRecord.objects.create(
             user=user,
@@ -933,7 +976,12 @@ def run_auto_order_job_for_date_slot(date_val, meal_slot, *, force=False, trigge
         total += 1
         user = cfg.user
 
-        if not cfg.default_corp_address_id:
+        default_addr = (
+            (cfg.default_corp_address_id_lunch if meal_slot == MealSlot.LUNCH else cfg.default_corp_address_id_dinner)
+            or cfg.default_corp_address_id
+            or ''
+        )
+        if not default_addr:
             failed += 1
             AutoOrderJobItem.objects.update_or_create(
                 job=job,
@@ -999,7 +1047,7 @@ def run_auto_order_job_for_date_slot(date_val, meal_slot, *, force=False, trigge
             if not namespace:
                 namespace = str(acc.account_namespace or '').strip()
         try:
-            meican_order_unique_id = _submit_meican_order_for_manual(user, menu_item, namespace)
+            meican_order_unique_id, _, _ = _submit_meican_order_for_manual(user, menu_item, namespace)
             idem = f'auto:{job.id}:{user.id}:{date_val}:{meal_slot}:{uuid.uuid4().hex[:8]}'
             OrderRecord.objects.create(
                 user=user,
