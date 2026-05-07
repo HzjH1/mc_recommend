@@ -1047,7 +1047,13 @@ def run_auto_order_job_for_date_slot(date_val, meal_slot, *, force=False, trigge
             if not namespace:
                 namespace = str(acc.account_namespace or '').strip()
         try:
-            meican_order_unique_id, _, _ = _submit_meican_order_for_manual(user, menu_item, namespace)
+            meican_order_unique_id, _, _ = _submit_meican_order_for_manual(
+                user,
+                menu_item,
+                namespace,
+                selected_user_addr='',
+                selected_corp_addr=str(default_addr).strip(),
+            )
             idem = f'auto:{job.id}:{user.id}:{date_val}:{meal_slot}:{uuid.uuid4().hex[:8]}'
             OrderRecord.objects.create(
                 user=user,
