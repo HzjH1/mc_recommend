@@ -5,18 +5,34 @@ type ApiResponse<T> = {
   data: T;
 };
 
+type ApiService = 'backend' | 'meican';
+
 function normalizeBase(base?: string) {
   return `${base || ''}`.trim().replace(/\/$/, '');
 }
 
-function buildUrl(path: string) {
+function resolveServiceBase(service: ApiService) {
+  if (service === 'meican') {
+    return (
+      normalizeBase(import.meta.env.VITE_MEICAN_API_BASE as string | undefined) ||
+      normalizeBase(import.meta.env.VITE_API_BASE as string | undefined)
+    );
+  }
+  return (
+    normalizeBase(import.meta.env.VITE_BACKEND_API_BASE as string | undefined) ||
+    normalizeBase(import.meta.env.VITE_RECOMMEND_API_BASE as string | undefined) ||
+    normalizeBase(import.meta.env.VITE_API_BASE as string | undefined)
+  );
+}
+
+function buildUrl(path: string, service: ApiService) {
   const normalizedPath = path.startsWith('/') ? path : `/${path}`;
-  const envBase = normalizeBase(import.meta.env.VITE_API_BASE as string | undefined);
+  const envBase = resolveServiceBase(service);
   return envBase ? `${envBase}${normalizedPath}` : normalizedPath;
 }
 
-async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(buildUrl(path), {
+async function requestJson<T>(path: string, init?: RequestInit, service: ApiService = 'backend'): Promise<T> {
+  const response = await fetch(buildUrl(path, service), {
     ...init,
     headers: {
       'content-type': 'application/json',
@@ -279,7 +295,7 @@ export async function sendMeicanPhoneVerificationCode(phone: string): Promise<{ 
   return requestJson('/api/v1/meican/auth/send-code', {
     method: 'POST',
     body: JSON.stringify({ phone }),
-  });
+  }, 'meican');
 }
 
 export async function loginMeicanByPhone(params: {
@@ -289,5 +305,5 @@ export async function loginMeicanByPhone(params: {
   return requestJson('/api/v1/meican/auth/login', {
     method: 'POST',
     body: JSON.stringify(params),
-  });
+  }, 'meican');
 }

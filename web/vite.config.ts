@@ -8,6 +8,10 @@ export default defineConfig({
   base: '/static/web/',
   server: {
     proxy: {
+      '/api/v1/meican': {
+        target: process.env.VITE_DEV_MEICAN_ORIGIN || process.env.VITE_DEV_BACKEND_ORIGIN || 'http://127.0.0.1:8000',
+        changeOrigin: true,
+      },
       '/api': {
         target: process.env.VITE_DEV_BACKEND_ORIGIN || 'http://127.0.0.1:8000',
         changeOrigin: true,
