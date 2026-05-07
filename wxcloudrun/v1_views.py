@@ -467,6 +467,48 @@ def _submit_meican_order_for_manual(
     return '', user_addr, corp_addr
 
 
+def _cancel_meican_order_for_user(user: UserAccount, order_unique_id: str):
+    uid = str(order_unique_id or '').strip()
+    if not uid:
+        return
+    acc = UserMeicanAccount.objects.filter(user=user).first()
+    if not acc or not str(acc.access_token or '').strip():
+        raise ValueError('MEICAN_SESSION_REQUIRED')
+    form_body = urlencode(
+        {
+            'uniqueId': uid,
+            'type': 'CORP_ORDER',
+            'restoreCart': 'false',
+        }
+    )
+    try:
+        out = _forward_form_post('/api/v2.1/orders/delete', form_body, access_token=str(acc.access_token or '').strip())
+        logger.info(
+            'manual_order.forward_delete_response user_id=%s order_unique_id=%s status=%s message=%s',
+            user.id,
+            uid,
+            str(out.get('status') if isinstance(out, dict) else ''),
+            str(out.get('message') if isinstance(out, dict) else ''),
+        )
+    except HTTPError as e:
+        raw = e.read().decode('utf-8', errors='replace') if e.fp else ''
+        logger.warning(
+            'manual_order.forward_delete_http_error user_id=%s order_unique_id=%s http_status=%s body=%s',
+            user.id,
+            uid,
+            e.code,
+            raw[:1000],
+        )
+        raise ValueError(f'MEICAN_API_ERROR:HTTP_{e.code}')
+    except URLError:
+        logger.warning(
+            'manual_order.forward_delete_network_error user_id=%s order_unique_id=%s',
+            user.id,
+            uid,
+        )
+        raise ValueError('MEICAN_API_ERROR:NETWORK')
+
+
 def _within_auto_order_window(date_val, meal_slot):
     today = timezone.now().date()
     if date_val < today:
@@ -731,7 +773,7 @@ def get_daily_recommendations(request, user_id):
     namespace = request.GET.get('namespace') or ''
     user = _ensure_user(user_id)
     order_map = {
-        x.meal_slot: x for x in OrderRecord.objects.filter(user=user, date=date_val)
+        x.meal_slot: x for x in OrderRecord.objects.filter(user=user, date=date_val, status='CREATED')
     }
 
     result = {'date': str(date_val), 'LUNCH': [], 'DINNER': []}
@@ -846,7 +888,7 @@ def post_manual_order(request, user_id):
         if existed_by_idem:
             return _resp(data={'orderId': existed_by_idem.id, 'status': existed_by_idem.status, 'idempotent': True})
 
-        existing_slot = OrderRecord.objects.filter(user=user, date=date_val, meal_slot=meal_slot).first()
+        existing_slot = OrderRecord.objects.filter(user=user, date=date_val, meal_slot=meal_slot, status='CREATED').first()
         if existing_slot:
             if replace:
                 existing_slot.delete()
@@ -923,6 +965,42 @@ def post_manual_order(request, user_id):
     )
 
 
+def post_manual_order_cancel(request, user_id):
+    if request.method != 'POST':
+        return _resp(code=40500, message='请求方式错误，请使用POST')
+
+    body, err = _parse_json_body(request)
+    if err:
+        return err
+
+    date_val, parse_err = _parse_date(body.get('date'))
+    if parse_err:
+        return _resp(code=40008, message=parse_err)
+    meal_slot = _normalize_meal_slot(body.get('mealSlot'))
+    if not meal_slot:
+        return _resp(code=40009, message='mealSlot仅支持LUNCH/DINNER')
+
+    user = _ensure_user(user_id)
+    record = (
+        OrderRecord.objects.filter(user=user, date=date_val, meal_slot=meal_slot, status='CREATED')
+        .order_by('-id')
+        .first()
+    )
+    if not record:
+        return _resp(code=40402, message='ORDER_NOT_FOUND')
+
+    order_uid = str(body.get('orderUniqueId') or record.meican_order_unique_id or '').strip()
+    try:
+        if order_uid:
+            _cancel_meican_order_for_user(user, order_uid)
+    except ValueError as e:
+        return _resp(code=50202, message=str(e))
+
+    record.status = 'CANCELED'
+    record.save(update_fields=['status'])
+    return _resp(data={'orderId': record.id, 'status': record.status, 'orderUniqueId': order_uid})
+
+
 def _internal_auth_ok(request):
     configured_token = str(getattr(settings, 'INTERNAL_JOB_TOKEN', '') or '')
     if not configured_token:
@@ -981,23 +1059,8 @@ def run_auto_order_job_for_date_slot(date_val, meal_slot, *, force=False, trigge
             or cfg.default_corp_address_id
             or ''
         )
-        if not default_addr:
-            failed += 1
-            AutoOrderJobItem.objects.update_or_create(
-                job=job,
-                user=user,
-                defaults={
-                    'status': JobItemStatus.SKIPPED,
-                    'retry_count': 0,
-                    'fail_code': 'NO_DEFAULT_ADDRESS',
-                    'fail_message': '无默认企业地址',
-                    'menu_item': None,
-                    'meican_order_unique_id': '',
-                },
-            )
-            continue
 
-        if OrderRecord.objects.filter(user=user, date=date_val, meal_slot=meal_slot).exists():
+        if OrderRecord.objects.filter(user=user, date=date_val, meal_slot=meal_slot, status='CREATED').exists():
             failed += 1
             AutoOrderJobItem.objects.update_or_create(
                 job=job,
@@ -1052,7 +1115,7 @@ def run_auto_order_job_for_date_slot(date_val, meal_slot, *, force=False, trigge
                 menu_item,
                 namespace,
                 selected_user_addr='',
-                selected_corp_addr=str(default_addr).strip(),
+                selected_corp_addr=str(default_addr or '').strip(),
             )
             idem = f'auto:{job.id}:{user.id}:{date_val}:{meal_slot}:{uuid.uuid4().hex[:8]}'
             OrderRecord.objects.create(

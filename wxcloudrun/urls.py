@@ -36,6 +36,8 @@ urlpatterns = (
     url(r'^^api/v1/users/(?P<user_id>\d+)/order-addresses(/)?$', v1_views.get_user_order_addresses),
     # V1-手动下单
     url(r'^^api/v1/users/(?P<user_id>\d+)/orders(/)?$', v1_views.post_manual_order),
+    # V1-手动取消下单（后端取消 + 美餐取消）
+    url(r'^^api/v1/users/(?P<user_id>\d+)/orders/cancel(/)?$', v1_views.post_manual_order_cancel),
     # V1-内部任务触发
     url(r'^^api/v1/internal/jobs/auto-order/run(/)?$', v1_views.post_internal_auto_order_run),
     # V1-内部任务状态查询
