@@ -21,6 +21,7 @@ from wxcloudrun.models import (
     JobStatus,
     MealSlot,
     MenuItem,
+    MenuSnapshot,
     OrderRecord,
     RecommendationBatch,
     RecommendationBatchStatus,
@@ -30,6 +31,7 @@ from wxcloudrun.models import (
     UserPreference,
 )
 from wxcloudrun.menu_sync_service import normalize_days_payload, sync_menu_days
+from wxcloudrun.meican_menu_snapshot import sync_meican_menu_snapshot_for_user_dates
 from wxcloudrun.meican_client_config import (
     resolve_forward_base_url,
     resolve_forward_credentials,
@@ -554,6 +556,44 @@ def put_user_preferences(request, user_id):
     return _resp(data={'userId': user.id, 'preferenceId': obj.id})
 
 
+def get_user_preferences(request, user_id):
+    if request.method != 'GET':
+        return _resp(code=40500, message='请求方式错误，请使用GET')
+    user = _ensure_user(user_id)
+    pref = UserPreference.objects.filter(user=user).first()
+    if not pref:
+        return _resp(
+            data={
+                'prefersSpicy': False,
+                'isHalal': False,
+                'isCutting': False,
+                'staple': 'rice',
+                'taboo': '',
+                'priceMin': None,
+                'priceMax': None,
+            }
+        )
+    return _resp(
+        data={
+            'prefersSpicy': bool(pref.prefers_spicy),
+            'isHalal': bool(pref.is_halal),
+            'isCutting': bool(pref.is_cutting),
+            'staple': pref.staple or 'rice',
+            'taboo': pref.taboo or '',
+            'priceMin': float(pref.price_min) if pref.price_min is not None else None,
+            'priceMax': float(pref.price_max) if pref.price_max is not None else None,
+        }
+    )
+
+
+def user_preferences(request, user_id):
+    if request.method == 'GET':
+        return get_user_preferences(request, user_id)
+    if request.method == 'PUT':
+        return put_user_preferences(request, user_id)
+    return _resp(code=40500, message='仅支持GET或PUT')
+
+
 def put_auto_order_config(request, user_id):
     if request.method != 'PUT':
         return _resp(code=40500, message='请求方式错误，请使用PUT')
@@ -759,6 +799,151 @@ def post_user_menu_week_sync(request, user_id):
                 '本次 payload 中已消失的 dish_id 仍会删除对应 menu_item（其推荐行会随级联删除）。'
                 '若菜单结构大变，仍建议重跑 refresh_user_recommendations。'
             ),
+        }
+    )
+
+
+def _weekday_label_zh(dt_val):
+    labels = ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
+    return labels[dt_val.weekday()]
+
+
+def _normalize_menu_status(raw_status: str) -> str:
+    s = str(raw_status or '').lower().strip()
+    sold_out_markers = {'sold_out', 'soldout', 'unavailable', 'off', 'closed'}
+    return 'sold_out' if s in sold_out_markers else 'available'
+
+
+def _is_meican_recommended(raw_json):
+    if not isinstance(raw_json, dict):
+        return False
+    direct_true_fields = [
+        'isRecommended',
+        'recommended',
+        'fromRecommendation',
+        'fromRecommended',
+    ]
+    for key in direct_true_fields:
+        if raw_json.get(key) is True:
+            return True
+    non_empty_hint_fields = [
+        'recommendReason',
+        'recommendationReason',
+        'recommendReasonText',
+        'reason',
+        'rankNo',
+        'recommendationScore',
+    ]
+    for key in non_empty_hint_fields:
+        val = raw_json.get(key)
+        if val not in (None, '', 0, '0'):
+            return True
+    source_val = str(raw_json.get('source') or raw_json.get('from') or '').lower().strip()
+    return source_val in {'recommendation', 'recommended', 'meican_recommendation'}
+
+
+def _build_meal_sections_from_snapshots(snapshots):
+    sections = []
+    for snap in snapshots:
+        items = list(MenuItem.objects.filter(snapshot=snap).order_by('id'))
+        rest_map = {}
+        recommended = []
+        fallback_recommended = []
+        for item in items:
+            status = _normalize_menu_status(item.status)
+            row = {
+                'id': item.id,
+                'name': item.dish_name,
+                'price': f'{(item.price_cent or 0) / 100:.2f}' if item.price_cent else '',
+                'status': status,
+                'statusText': '售罄' if status == 'sold_out' else '可选',
+            }
+            rkey = f'{item.restaurant_id or ""}|{item.restaurant_name or ""}'
+            if rkey not in rest_map:
+                rest_map[rkey] = {
+                    'id': item.restaurant_id or '',
+                    'name': item.restaurant_name or '未知餐厅',
+                    'menus': [],
+                }
+            rest_map[rkey]['menus'].append(row)
+            if status == 'available':
+                if _is_meican_recommended(item.raw_json) and len(recommended) < 8:
+                    recommended.append(row)
+                if len(fallback_recommended) < 8:
+                    fallback_recommended.append(row)
+        if not recommended:
+            recommended = fallback_recommended
+        key = 'morning' if snap.meal_slot == MealSlot.LUNCH else 'afternoon'
+        title = '上午餐期' if key == 'morning' else '下午餐期'
+        sections.append(
+            {
+                'key': key,
+                'tabUniqueId': snap.tab_unique_id or '',
+                'targetTime': _format_target_time(snap.target_time),
+                'title': title,
+                'restaurants': list(rest_map.values()),
+                'recommendedDishes': recommended,
+            }
+        )
+    sections.sort(key=lambda x: x['key'])
+    return sections
+
+
+def get_user_menu_weekly(request, user_id):
+    """
+    Web/H5 菜单页接口（对齐 mc1 pages/meican/index 需要的数据结构）：
+    返回 weekDates + selectedDate + mealSections（餐厅分组 / 推荐菜 / 售罄状态）。
+    """
+    if request.method != 'GET':
+        return _resp(code=40500, message='请求方式错误，请使用GET')
+
+    user = _ensure_user(user_id)
+    acc = UserMeicanAccount.objects.filter(user=user).first()
+    namespace = str(request.GET.get('namespace') or (acc.account_namespace if acc else '') or '').strip()
+    if not namespace:
+        return _resp(code=40022, message='缺少namespace')
+
+    date_val, parse_err = _parse_date(request.GET.get('date'), default_today=True)
+    if parse_err:
+        return _resp(code=40007, message=parse_err)
+
+    # 以 date 所在周为基准，输出周一~周日中的工作日 chips（与小程序体验对齐）。
+    monday = date_val - timedelta(days=(date_val.weekday()))
+    week_days = [monday + timedelta(days=i) for i in range(7)]
+    work_days = [d for d in week_days if d.weekday() < 5]
+
+    if request.GET.get('sync') in {'1', 'true', 'yes'} and acc:
+        try:
+            sync_meican_menu_snapshot_for_user_dates(user, namespace, work_days, language='zh-CN')
+        except Exception as exc:
+            logger.warning('menu_weekly sync failed user_id=%s namespace=%s err=%s', user.id, namespace, exc)
+
+    week_dates = []
+    for d in work_days:
+        week_dates.append(
+            {
+                'dateKey': str(d),
+                'label': f'{d.month}月{d.day}日',
+                'weekLabel': _weekday_label_zh(d),
+                'isToday': d == timezone.now().date(),
+            }
+        )
+
+    selected_date_obj = date_val if date_val in work_days else (work_days[0] if work_days else date_val)
+    snapshots = list(
+        MenuSnapshot.objects.filter(
+            namespace=namespace, date=selected_date_obj, meal_slot__in=[MealSlot.LUNCH, MealSlot.DINNER]
+        )
+        .order_by('meal_slot', 'id')
+    )
+    meal_sections = _build_meal_sections_from_snapshots(snapshots)
+
+    return _resp(
+        data={
+            'namespace': namespace,
+            'weekDates': week_dates,
+            'selectedDate': str(selected_date_obj),
+            'mealSections': meal_sections,
         }
     )
 
