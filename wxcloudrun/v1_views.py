@@ -35,7 +35,9 @@ from wxcloudrun.meican_menu_snapshot import sync_meican_menu_snapshot_for_user_d
 from wxcloudrun.meican_client_config import (
     resolve_forward_base_url,
     resolve_forward_credentials,
+    resolve_graphql_credentials,
     resolve_forward_referer,
+    resolve_graphql_referer,
     resolve_forward_user_agent,
     resolve_graphql_app,
     resolve_x_mc_device,
@@ -44,6 +46,151 @@ from wxcloudrun.recommendation_service import run_weekly_recommendation_job
 
 # settings.LOGGING 仅显式配置了 logger "log"，这里统一走该通道，确保落盘到 all-*.log
 logger = logging.getLogger('log')
+
+GRAPHQL_BASE_URL = 'https://gateway.meican.com/graphql'
+PAYMENT_BASE_URL = 'https://meican-pay-checkout-bff.meican.com'
+
+GRAPHQL_OPERATION_QUERIES = {
+    'GetPhoneVerificationCode': """mutation GetPhoneVerificationCode($input: UserCenterSsoV2PhoneVerificationCodeRequest!) {
+  getPhoneVerificationCode(input: $input)
+}
+""",
+    'ChooseAccountLogin': """mutation ChooseAccountLogin($input: ChooseAccountLoginInput!) {
+  chooseAccountLogin(input: $input) {
+    ...TokenOutput
+    __typename
+  }
+}
+
+fragment TokenOutput on TokenOutput {
+  token {
+    ...UserCenterSsoV2TokenData
+    __typename
+  }
+  __typename
+}
+
+fragment UserCenterSsoV2TokenData on UserCenterSsoV2TokenData {
+  accessToken
+  expiry
+  needResetPassword
+  refreshToken
+  refreshTokenExpiry
+  tokenType
+  x
+  __typename
+}
+""",
+    'LoginByAuthWay': """mutation LoginByAuthWay($input: LoginByAuthWayInput!) {
+  loginByAuthWay(input: $input) {
+    ...UserCenterSsoV2LoginByAuthWayView
+    __typename
+  }
+}
+
+fragment UserCenterSsoV2LoginByAuthWayView on UserCenterSsoV2LoginByAuthWayView {
+  data {
+    ...UserCenterSsoV2LoginByAuthWayData
+    __typename
+  }
+  meta {
+    ...PbmetaV1Meta
+    __typename
+  }
+  __typename
+}
+
+fragment UserCenterSsoV2LoginByAuthWayData on UserCenterSsoV2LoginByAuthWayData {
+  clientMemberList {
+    ...UserCenterSsoV2ClientMember
+    __typename
+  }
+  signature
+  ticket
+  userList {
+    ...UserCenterSsoV2User
+    __typename
+  }
+  __typename
+}
+
+fragment UserCenterSsoV2ClientMember on UserCenterSsoV2ClientMember {
+  accountVersion
+  clientId
+  email
+  extra {
+    ...UserCenterSsoV2ClientMemberExtra
+    __typename
+  }
+  id
+  name
+  __typename
+}
+
+fragment UserCenterSsoV2ClientMemberExtra on UserCenterSsoV2ClientMemberExtra {
+  isAccountFrozen
+  leftFrozenTimestamp
+  __typename
+}
+
+fragment UserCenterSsoV2User on UserCenterSsoV2User {
+  accountVersion
+  avatar
+  email
+  extra {
+    ...UserCenterSsoV2UserExtra
+    __typename
+  }
+  id
+  idpInfo {
+    ...UserCenterSsoV2IdpInfo
+    __typename
+  }
+  name
+  phone
+  realName
+  snowflakeId
+  type
+  wechatUser {
+    ...UserCenterSsoV2WechatUser
+    __typename
+  }
+  __typename
+}
+
+fragment UserCenterSsoV2UserExtra on UserCenterSsoV2UserExtra {
+  isAccountFrozen
+  leftFrozenTimestamp
+  needResetPassword
+  playOauthClientId
+  playUniqueId
+  userSerialNo
+  __typename
+}
+
+fragment UserCenterSsoV2IdpInfo on UserCenterSsoV2IdpInfo {
+  id
+  type
+  __typename
+}
+
+fragment UserCenterSsoV2WechatUser on UserCenterSsoV2WechatUser {
+  active
+  appId
+  loginToken
+  openId
+  removed
+  wechatType
+  __typename
+}
+
+fragment PbmetaV1Meta on PbmetaV1Meta {
+  code
+  msg
+  __typename
+}
+""",
+}
 
 
 def _request_id():
@@ -140,6 +287,40 @@ def _ensure_list(value):
     return [value]
 
 
+def _append_query_params(url: str, params: dict) -> str:
+    clean = {k: v for k, v in params.items() if v is not None and str(v).strip() != ''}
+    if not clean:
+        return url
+    return f'{url}{"&" if "?" in url else "?"}{urlencode(clean)}'
+
+
+def _collect_matching(obj, pred, out, seen):
+    if obj is None:
+        return
+    if isinstance(obj, dict):
+        oid = id(obj)
+        if oid in seen:
+            return
+        seen.add(oid)
+        if pred(obj):
+            out.append(obj)
+        for v in obj.values():
+            _collect_matching(v, pred, out, seen)
+    elif isinstance(obj, list):
+        oid = id(obj)
+        if oid in seen:
+            return
+        seen.add(oid)
+        for v in obj:
+            _collect_matching(v, pred, out, seen)
+
+
+def _find_objects(value, predicate):
+    out = []
+    _collect_matching(value, predicate, out, set())
+    return out
+
+
 def _format_target_time(dt_val):
     if dt_val is None:
         return ''
@@ -184,6 +365,215 @@ def _build_forward_headers(access_token=''):
     if access_token:
         headers['Authorization'] = f'Bearer {access_token}'
     return headers
+
+
+def _build_graphql_gateway_headers(profile='graphql_verification'):
+    referer = resolve_graphql_referer() or 'https://www.meican.com/'
+    app = resolve_graphql_app() or 'meican/web-pc (prod;4.90.1;sys;main)'
+    cid, csec = resolve_forward_credentials()
+    if profile in {'graphql_signin', 'graphql_verification'}:
+        gql_cid, gql_csec = resolve_graphql_credentials()
+        cid, csec = gql_cid or cid, gql_csec or csec
+    page_path = '/auth/signin/mobile?stamp=AB' if profile == 'graphql_signin' else '/auth/verification?stamp=AC'
+    return {
+        'accept': '*/*',
+        'accept-language': 'zh',
+        'clientid': cid,
+        'clientsecret': csec,
+        'x-mc-app': app,
+        'x-mc-device': resolve_x_mc_device(),
+        'x-mc-page': page_path,
+        'Referer': referer,
+    }
+
+
+def _http_json_request(url: str, method='GET', data=None, headers=None, timeout=45):
+    payload = None
+    req_headers = dict(headers or {})
+    if data is not None:
+        if isinstance(data, (dict, list)):
+            payload = json.dumps(data, ensure_ascii=False).encode('utf-8')
+            req_headers.setdefault('Content-Type', 'application/json')
+        elif isinstance(data, bytes):
+            payload = data
+        else:
+            payload = str(data).encode('utf-8')
+    req = Request(url, data=payload, method=method, headers=req_headers)
+    with urlopen(req, timeout=timeout) as resp:  # nosec B310
+        raw = resp.read().decode('utf-8', errors='replace')
+    return json.loads(raw) if raw else {}
+
+
+def _graphql_request(operation_name: str, variables: dict, header_profile='graphql_verification'):
+    query = GRAPHQL_OPERATION_QUERIES.get(operation_name, '').strip()
+    if not query:
+        raise ValueError(f'GRAPHQL_OPERATION_QUERY_MISSING:{operation_name}')
+    payload = _http_json_request(
+        f'{GRAPHQL_BASE_URL}?op={operation_name}',
+        method='POST',
+        data={'operationName': operation_name, 'variables': variables, 'query': query},
+        headers=_build_graphql_gateway_headers(header_profile),
+        timeout=45,
+    )
+    if isinstance(payload, dict) and payload.get('errors'):
+        err0 = _ensure_list(payload.get('errors'))[:1] or [{}]
+        err0 = err0[0] if isinstance(err0[0], dict) else {}
+        trace = _pick_first(err0, ['extensions.originalError.x-trace-id', 'extensions.x-trace-id'], '')
+        base = str(err0.get('message') or f'{operation_name} failed')
+        raise ValueError(f'{base} (trace:{trace})' if trace else base)
+    if isinstance(payload, dict) and isinstance(payload.get('data'), dict):
+        return payload['data']
+    return payload
+
+
+def _payment_request(path, query=None, access_token=''):
+    cid, csec = resolve_forward_credentials()
+    url = _append_query_params(
+        f'{PAYMENT_BASE_URL}{path}',
+        {'client_id': cid, 'client_secret': csec, **(query or {})},
+    )
+    headers = _build_forward_headers(access_token)
+    return _http_json_request(url, method='GET', headers=headers, timeout=30)
+
+
+def _extract_corp_namespace_from_account_info(account_info=None, preferred_account_name=''):
+    if not isinstance(account_info, dict):
+        return ''
+    corps = []
+    corps.extend(_ensure_list(_pick_first(account_info, ['corps', 'corpList', 'companies', 'userCorps', 'corpInfos'], [])))
+    key_paths = [
+        'namespace',
+        'corpNamespace',
+        'corpUniqueNamespace',
+        'uniqueNamespace',
+        'slug',
+        'code',
+        'corpKey',
+        'enterpriseKey',
+        'corp.namespace',
+        'corp.corpNamespace',
+        'metadata.namespace',
+    ]
+    wanted_name = str(preferred_account_name or '').strip()
+    if wanted_name:
+        for corp in corps:
+            if not isinstance(corp, dict):
+                continue
+            corp_name = str(_pick_first(corp, ['name', 'accountName', 'corpName', 'companyName'], '')).strip()
+            if corp_name != wanted_name:
+                continue
+            ns = str(_pick_first(corp, key_paths, '')).strip()
+            if ns:
+                return ns
+    for corp in corps:
+        if not isinstance(corp, dict):
+            continue
+        ns = str(_pick_first(corp, key_paths, '')).strip()
+        if ns:
+            return ns
+    top_val = str(
+        _pick_first(
+            account_info,
+            ['meicanCorpNamespace', 'corpNamespace', 'currentCorpNamespace', 'defaultNamespace', 'namespace'],
+            '',
+        )
+    ).strip()
+    if top_val:
+        return top_val
+    hits = _find_objects(
+        account_info,
+        lambda o: isinstance(o, dict)
+        and str(o.get('corpNamespace') or o.get('corpNamespaceKey') or '').strip()
+        and any(o.get(k) for k in ['corpName', 'name', 'companyName', 'corpId']),
+    )
+    for hit in hits:
+        ns = str(hit.get('corpNamespace') or hit.get('corpNamespaceKey') or '').strip()
+        if ns:
+            return ns
+    return ''
+
+
+def _extract_lunch_dinner_namespaces_from_dinnerin(payload=None):
+    items = _ensure_list(_pick_first(payload if isinstance(payload, dict) else {}, ['data.items', 'items'], []))
+    valid = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get('name') or '').strip()
+        labels = [str(x or '').strip() for x in _ensure_list(item.get('labels'))]
+        if not name or '到店' in name:
+            continue
+        if any('特色档口' in label for label in labels):
+            continue
+        valid.append(item)
+    lunch = ''
+    dinner = ''
+    for item in valid:
+        ns = str(item.get('namespace') or '').strip()
+        if not ns:
+            continue
+        labels = [str(x or '').strip() for x in _ensure_list(item.get('labels'))]
+        if not lunch and any('午餐' in label for label in labels):
+            lunch = ns
+        if not dinner and any('晚餐' in label for label in labels):
+            dinner = ns
+    return {'lunchNamespace': lunch, 'dinnerNamespace': dinner}
+
+
+def _normalize_meican_login_payload(payload):
+    normalized = payload if isinstance(payload, dict) else {}
+    data = normalized.get('data')
+    has_direct_access = str(_pick_first(normalized, ['accessToken', 'access_token', 'token.accessToken', 'token.access_token'], '')).strip()
+    if isinstance(data, dict) and not has_direct_access:
+        merged = dict(normalized)
+        merged.update(data)
+        normalized = merged
+    return normalized
+
+
+def _refresh_user_meican_account_token(acc: UserMeicanAccount) -> bool:
+    cid, csec = resolve_forward_credentials()
+    if not cid or not csec or not str(acc.refresh_token or '').strip():
+        return False
+    token_url = _append_query_params(
+        f'{resolve_forward_base_url().rstrip("/")}/api/v2.1/oauth/token',
+        {'client_id': cid, 'client_secret': csec},
+    )
+    req = Request(
+        token_url,
+        data=urlencode({'grant_type': 'refresh_token', 'refresh_token': str(acc.refresh_token or '').strip()}).encode('utf-8'),
+        method='POST',
+        headers={
+            'clientID': cid,
+            'clientSecret': csec,
+            'Referer': resolve_forward_referer(),
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'User-Agent': resolve_forward_user_agent(),
+        },
+    )
+    try:
+        with urlopen(req, timeout=30) as resp:  # nosec B310
+            raw = resp.read().decode('utf-8', errors='replace')
+        data = json.loads(raw) if raw else {}
+    except (HTTPError, URLError, json.JSONDecodeError, ValueError):
+        return False
+    access = data.get('accessToken') or data.get('access_token')
+    refresh = data.get('refreshToken') or data.get('refresh_token')
+    if not access:
+        return False
+    acc.access_token = str(access).strip()
+    if refresh:
+        acc.refresh_token = str(refresh).strip()
+    ttl = data.get('expiresIn') or data.get('expires_in')
+    try:
+        ttl = int(ttl) if ttl is not None else 3600
+    except (TypeError, ValueError):
+        ttl = 3600
+    if ttl <= 0:
+        ttl = 3600
+    acc.token_expire_at = timezone.now() + timedelta(seconds=ttl)
+    acc.save(update_fields=['access_token', 'refresh_token', 'token_expire_at', 'updated_at'])
+    return True
 
 
 def _forward_json_get(path, query, access_token=''):
@@ -392,6 +782,8 @@ def _submit_meican_order_for_manual(
     acc = UserMeicanAccount.objects.filter(user=user).first()
     if not acc or not str(acc.access_token or '').strip():
         raise ValueError('MEICAN_SESSION_REQUIRED')
+    if acc.token_expire_at and acc.token_expire_at <= timezone.now():
+        _refresh_user_meican_account_token(acc)
     ns = str(namespace or acc.account_namespace or '').strip()
     if not ns:
         raise ValueError('MEICAN_NAMESPACE_REQUIRED')
@@ -477,6 +869,8 @@ def _cancel_meican_order_for_user(user: UserAccount, order_unique_id: str):
     acc = UserMeicanAccount.objects.filter(user=user).first()
     if not acc or not str(acc.access_token or '').strip():
         raise ValueError('MEICAN_SESSION_REQUIRED')
+    if acc.token_expire_at and acc.token_expire_at <= timezone.now():
+        _refresh_user_meican_account_token(acc)
     form_body = urlencode(
         {
             'uniqueId': uid,
@@ -524,6 +918,265 @@ def _within_auto_order_window(date_val, meal_slot):
     if meal_slot == MealSlot.LUNCH:
         return now_t <= lunch_deadline
     return now_t <= dinner_deadline
+
+
+def _format_price_value(value):
+    if value in (None, ''):
+        return ''
+    try:
+        number_value = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if number_value > 1000:
+        return f'{number_value / 100:.2f}'
+    return f'{number_value:.2f}'
+
+
+def _fetch_account_info_with_token(access_token: str):
+    return _forward_json_get('/api/v2.1/accounts/show', {}, access_token=access_token)
+
+
+def _fetch_real_name_with_token(access_token: str):
+    return _forward_json_get('/api/v2.1/client/getrealname', {}, access_token=access_token)
+
+
+def _fetch_payment_accounts_with_token(access_token: str):
+    payload = _payment_request('/api/v3.0/paymentadapter/user/account/list', {'includeCheckout': True}, access_token=access_token)
+    accounts = _ensure_list(_pick_first(payload if isinstance(payload, dict) else {}, ['accounts', 'list', 'data'], payload))
+    return accounts
+
+
+def _ensure_session_namespaces_with_token(access_token: str, selected_account_name=''):
+    lunch = ''
+    dinner = ''
+    fallback_ns = ''
+    try:
+        dinnerin = _forward_json_get('/api/v2.1/corpmembers/dinnerin', {}, access_token=access_token)
+        parsed = _extract_lunch_dinner_namespaces_from_dinnerin(dinnerin)
+        lunch = str(parsed.get('lunchNamespace') or '').strip()
+        dinner = str(parsed.get('dinnerNamespace') or '').strip()
+    except Exception:
+        pass
+    try:
+        account_info = _fetch_account_info_with_token(access_token)
+        fallback_ns = _extract_corp_namespace_from_account_info(account_info, selected_account_name)
+    except Exception:
+        fallback_ns = ''
+    lunch = lunch or fallback_ns
+    dinner = dinner or fallback_ns
+    account_namespace = dinner or lunch or fallback_ns
+    return {
+        'accountNamespace': account_namespace,
+        'accountNamespaceLunch': lunch,
+        'accountNamespaceDinner': dinner,
+    }
+
+
+def _fetch_meican_user_bundle_with_token(access_token: str, selected_account_name=''):
+    account_info = _fetch_account_info_with_token(access_token)
+    real_name = _fetch_real_name_with_token(access_token)
+    payment_accounts = _fetch_payment_accounts_with_token(access_token)
+    corps = _ensure_list(_pick_first(account_info, ['corps', 'corpList', 'companies'], []))
+    corp_names = [str(_pick_first(corp, ['name', 'corpName', 'companyName'], '')).strip() for corp in corps if isinstance(corp, dict)]
+    corp_names = [x for x in corp_names if x]
+    meican_corp_namespace = _extract_corp_namespace_from_account_info(account_info, selected_account_name)
+    first_payment_account = payment_accounts[0] if payment_accounts else {}
+    display_name = str(_pick_first(real_name, ['realName', 'name'], _pick_first(account_info, ['name', 'nickName'], '美'))).strip()
+    return {
+        'profile': {
+            'meicanName': display_name,
+            'meicanMemberId': str(_pick_first(account_info, ['memberId', 'id', 'snowflakeId'], '')).strip(),
+            'meicanEmployeeNo': str(_pick_first(account_info, ['employeeNo', 'jobNumber'], '')).strip(),
+            'email': str(_pick_first(account_info, ['email', 'mail'], '')).strip(),
+            'phone': str(_pick_first(account_info, ['phone', 'mobile'], '')).strip(),
+            'avatarText': (display_name[:1] or '美'),
+            'meicanCorpNamespace': meican_corp_namespace,
+            'corpNames': corp_names,
+            'userType': str(_pick_first(account_info, ['userType', 'type'], '')).strip(),
+            'balance': _format_price_value(_pick_first(first_payment_account, ['balance', 'availableBalance', 'amountInCent'], '')),
+            'accountStatus': str(_pick_first(account_info, ['status'], '')).strip(),
+        },
+        'raw': {
+            'accountInfo': account_info,
+            'realName': real_name,
+            'paymentAccounts': payment_accounts,
+        },
+    }
+
+
+def _choose_meican_account_login(login_payload, phone=''):
+    normalized = _normalize_meican_login_payload(login_payload)
+    direct_access_token = str(
+        _pick_first(normalized, ['accessToken', 'access_token', 'token.accessToken', 'token.access_token'], '')
+    ).strip()
+    if direct_access_token:
+        expiry_raw = _pick_first(
+            normalized,
+            ['expiresIn', 'expires_in', 'token.expiresIn', 'token.expires_in', 'token.expiry', 'expiry'],
+            None,
+        )
+        try:
+            expiry_num = int(expiry_raw) if expiry_raw not in (None, '') else 3600
+        except (TypeError, ValueError):
+            expiry_num = 3600
+        session = {
+            'phone': phone,
+            'accessToken': direct_access_token,
+            'refreshToken': str(
+                _pick_first(normalized, ['refreshToken', 'refresh_token', 'token.refreshToken', 'token.refresh_token'], '')
+            ).strip(),
+            'accessTokenExpiresIn': expiry_num if expiry_num > 0 else 3600,
+            'selectedAccountName': str(_pick_first(normalized, ['accountName', 'name'], '')).strip(),
+            'accountNamespace': str(
+                _pick_first(normalized, ['namespace', 'corpNamespace', 'corpUniqueNamespace', 'uniqueNamespace', 'selectedAccount.namespace'], '')
+            ).strip(),
+            'snowflakeId': str(_pick_first(normalized, ['snowflakeId', 'userSnowflakeId'], '')).strip(),
+            'signature': str(_pick_first(normalized, ['signature'], '')).strip(),
+            'ticket': str(_pick_first(normalized, ['ticket'], '')).strip(),
+        }
+        session.update(_ensure_session_namespaces_with_token(session['accessToken'], session.get('selectedAccountName', '')))
+        return session
+
+    ticket = str(_pick_first(normalized, ['ticket'], '')).strip()
+    accounts = []
+    accounts.extend(_ensure_list(normalized.get('accounts')))
+    accounts.extend(_ensure_list(normalized.get('accountList')))
+    accounts.extend(_ensure_list(normalized.get('selectableAccounts')))
+    accounts.extend(_ensure_list(normalized.get('userList')))
+    accounts.extend(_ensure_list(normalized.get('clientMemberList')))
+    accounts = [x for x in accounts if isinstance(x, dict)]
+    if not ticket or not accounts:
+        raise ValueError('MEICAN_LOGIN_ACCOUNT_REQUIRED')
+    target_account = accounts[0]
+    flow_signature = str(_pick_first(target_account, ['signature'], '') or _pick_first(normalized, ['signature'], '')).strip()
+    response = _graphql_request(
+        'ChooseAccountLogin',
+        {
+            'input': {
+                'ticket': ticket,
+                'snowflakeId': str(_pick_first(target_account, ['snowflakeId', 'userSnowflakeId'], '')).strip(),
+                'signature': flow_signature,
+            }
+        },
+        header_profile='forward_verification',
+    )
+    raw_out = response.get('chooseAccountLogin') if isinstance(response, dict) else response
+    token_bag = raw_out.get('token') if isinstance(raw_out, dict) and isinstance(raw_out.get('token'), dict) else raw_out
+    expiry_raw = _pick_first(token_bag if isinstance(token_bag, dict) else {}, ['expiry', 'expiresIn', 'expires_in'], None)
+    try:
+        expiry_num = int(expiry_raw) if expiry_raw not in (None, '') else 3600
+    except (TypeError, ValueError):
+        expiry_num = 3600
+    session = {
+        'phone': phone,
+        'accessToken': str(_pick_first(token_bag if isinstance(token_bag, dict) else {}, ['accessToken', 'access_token'], '')).strip(),
+        'refreshToken': str(_pick_first(token_bag if isinstance(token_bag, dict) else {}, ['refreshToken', 'refresh_token'], '')).strip(),
+        'accessTokenExpiresIn': expiry_num if expiry_num > 0 else 3600,
+        'selectedAccountName': str(_pick_first(target_account, ['name', 'accountName'], '')).strip(),
+        'accountNamespace': str(
+            _pick_first(target_account, ['namespace', 'corpNamespace', 'corpUniqueNamespace', 'uniqueNamespace', 'corp.namespace'], '')
+        ).strip(),
+        'snowflakeId': str(_pick_first(target_account, ['snowflakeId', 'userSnowflakeId'], '')).strip(),
+        'signature': flow_signature,
+        'ticket': ticket,
+    }
+    session.update(_ensure_session_namespaces_with_token(session['accessToken'], session.get('selectedAccountName', '')))
+    return session
+
+
+def post_meican_send_phone_verification_code(request):
+    if request.method != 'POST':
+        return _resp(code=40500, message='请求方式错误，请使用POST')
+    body, err = _parse_json_body(request)
+    if err:
+        return err
+    phone = str(body.get('phone') or '').strip()
+    if not phone:
+        return _resp(code=40031, message='缺少phone')
+    try:
+        out = _graphql_request(
+            'GetPhoneVerificationCode',
+            {'input': {'phone': phone, 'idpType': 'UserCenterIDP'}},
+            header_profile='graphql_signin',
+        )
+        return _resp(data={'phone': phone, 'raw': out})
+    except Exception as exc:
+        logger.warning('meican.send_code_failed phone=%s err=%s', phone, exc)
+        return _resp(code=50211, message=f'MEICAN_SEND_CODE_FAILED:{exc}')
+
+
+def post_meican_phone_login(request):
+    if request.method != 'POST':
+        return _resp(code=40500, message='请求方式错误，请使用POST')
+    body, err = _parse_json_body(request)
+    if err:
+        return err
+    phone = str(body.get('phone') or '').strip()
+    verification_code = str(body.get('verificationCode') or body.get('verification_code') or '').strip()
+    if not phone:
+        return _resp(code=40031, message='缺少phone')
+    if not verification_code:
+        return _resp(code=40032, message='缺少verificationCode')
+    try:
+        login_resp = _graphql_request(
+            'LoginByAuthWay',
+            {
+                'input': {
+                    'authMethod': 'PhoneVerificationCode',
+                    'phone': phone,
+                    'verificationCode': verification_code,
+                    'createAccountIfNotExist': True,
+                    'createAccountScene': 'UserSelfRegistration',
+                }
+            },
+            header_profile='graphql_verification',
+        )
+        payload = login_resp.get('loginByAuthWay') if isinstance(login_resp, dict) else login_resp
+        session_payload = _choose_meican_account_login(payload, phone)
+        bundle = _fetch_meican_user_bundle_with_token(session_payload['accessToken'], session_payload.get('selectedAccountName', ''))
+        profile = bundle.get('profile') if isinstance(bundle, dict) else {}
+        member_id = str(profile.get('meicanMemberId') or session_payload.get('snowflakeId') or '').strip()
+        if not member_id.isdigit():
+            raise ValueError('MEICAN_MEMBER_ID_INVALID')
+        user = _ensure_user(member_id, phone=phone)
+        ttl = int(session_payload.get('accessTokenExpiresIn') or 3600)
+        token_expire_at = timezone.now() + timedelta(seconds=ttl if ttl > 0 else 3600)
+        UserMeicanAccount.objects.update_or_create(
+            user=user,
+            defaults={
+                'meican_username': str(session_payload.get('selectedAccountName') or phone or 'meican_user').strip(),
+                'meican_email': str(profile.get('email') or '').strip(),
+                'access_token': str(session_payload.get('accessToken') or '').strip(),
+                'refresh_token': str(session_payload.get('refreshToken') or '').strip(),
+                'token_expire_at': token_expire_at,
+                'account_namespace': str(session_payload.get('accountNamespace') or profile.get('meicanCorpNamespace') or '').strip(),
+                'account_namespace_lunch': str(session_payload.get('accountNamespaceLunch') or session_payload.get('accountNamespace') or '').strip(),
+                'account_namespace_dinner': str(session_payload.get('accountNamespaceDinner') or session_payload.get('accountNamespace') or '').strip(),
+                'is_bound': 1,
+            },
+        )
+        response_profile = {
+            **profile,
+            'phone': phone,
+            'meicanExternalMemberId': phone,
+        }
+        response_session = {
+            'phone': phone,
+            'accessToken': str(session_payload.get('accessToken') or '').strip(),
+            'refreshToken': str(session_payload.get('refreshToken') or '').strip(),
+            'ticket': str(session_payload.get('ticket') or '').strip(),
+            'snowflakeId': str(session_payload.get('snowflakeId') or member_id).strip(),
+            'signature': str(session_payload.get('signature') or '').strip(),
+            'selectedAccountName': str(session_payload.get('selectedAccountName') or '').strip(),
+            'accountNamespace': str(session_payload.get('accountNamespace') or profile.get('meicanCorpNamespace') or '').strip(),
+            'accountNamespaceLunch': str(session_payload.get('accountNamespaceLunch') or session_payload.get('accountNamespace') or '').strip(),
+            'accountNamespaceDinner': str(session_payload.get('accountNamespaceDinner') or session_payload.get('accountNamespace') or '').strip(),
+            'accessTokenExpiresIn': ttl if ttl > 0 else 3600,
+        }
+        return _resp(data={'userId': user.id, 'session': response_session, 'profile': response_profile, 'raw': bundle.get('raw') if isinstance(bundle, dict) else {}})
+    except Exception as exc:
+        logger.warning('meican.phone_login_failed phone=%s err=%s', phone, exc)
+        return _resp(code=50212, message=f'MEICAN_PHONE_LOGIN_FAILED:{exc}')
 
 
 def put_user_preferences(request, user_id):
@@ -1003,6 +1656,8 @@ def get_user_order_addresses(request, user_id):
     acc = UserMeicanAccount.objects.filter(user=user).first()
     if not acc or not str(acc.access_token or '').strip():
         return _resp(code=40102, message='MEICAN_SESSION_REQUIRED')
+    if acc.token_expire_at and acc.token_expire_at <= timezone.now():
+        _refresh_user_meican_account_token(acc)
 
     namespace = str(request.GET.get('namespace') or acc.account_namespace or '').strip()
     if not namespace:
@@ -1063,6 +1718,8 @@ def post_manual_order(request, user_id):
     selected_corp_addr = str(body.get('corpAddressUniqueId') or body.get('defaultCorpAddressId') or '').strip()
     replace = bool(body.get('replace') or body.get('replaceOrder'))
     acc = UserMeicanAccount.objects.filter(user=user).first()
+    if acc and acc.token_expire_at and acc.token_expire_at <= timezone.now():
+        _refresh_user_meican_account_token(acc)
     if not namespace and acc:
         namespace = (
             str(acc.account_namespace_lunch or '').strip()

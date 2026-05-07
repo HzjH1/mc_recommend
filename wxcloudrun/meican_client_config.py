@@ -40,6 +40,24 @@ def resolve_forward_credentials() -> Tuple[str, str]:
     return cid, csec
 
 
+def resolve_graphql_credentials() -> Tuple[str, str]:
+    row = get_meican_client_config_row()
+    if row is not None:
+        cid = (row.graphql_client_id or row.forward_client_id or '').strip()
+        csec = (row.graphql_client_secret or row.forward_client_secret or '').strip()
+        if cid and csec:
+            return cid, csec
+    cid = (
+        (getattr(settings, 'MEICAN_GRAPHQL_CLIENT_ID', None) or '')
+        or (getattr(settings, 'MEICAN_FORWARD_CLIENT_ID', None) or '')
+    ).strip()
+    csec = (
+        (getattr(settings, 'MEICAN_GRAPHQL_CLIENT_SECRET', None) or '')
+        or (getattr(settings, 'MEICAN_FORWARD_CLIENT_SECRET', None) or '')
+    ).strip()
+    return cid, csec
+
+
 def resolve_forward_base_url() -> str:
     row = get_meican_client_config_row()
     if row is not None and (row.forward_base_url or '').strip():
@@ -66,6 +84,10 @@ def resolve_forward_referer() -> str:
     if row is not None and getattr(row, 'forward_referer', None) and str(row.forward_referer).strip():
         return str(row.forward_referer).strip()[:512]
     return (getattr(settings, 'MEICAN_FORWARD_REFERER', None) or 'https://servicewechat.com/').strip()
+
+
+def resolve_graphql_referer() -> str:
+    return (getattr(settings, 'MEICAN_GRAPHQL_REFERER', None) or 'https://www.meican.com/').strip()
 
 
 def resolve_x_mc_device() -> str:

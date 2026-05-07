@@ -44,7 +44,7 @@ function normalizeMealSections(sections: WeeklyMenuSection[] = []) {
   }));
 }
 
-async function loadPageBundle() {
+async function loadPageBundle(sync = false) {
   error.value = '';
 
   if (!meicanLoggedIn.value || !recommendUserId.value) {
@@ -60,6 +60,7 @@ async function loadPageBundle() {
     const data = await getWeeklyMenus(recommendUserId.value, {
       date: selectedDate.value || undefined,
       namespace: activeNamespace() || undefined,
+      sync,
     });
     weekDates.value = data.weekDates || [];
     selectedDate.value = data.selectedDate || '';
@@ -79,11 +80,11 @@ async function handleDateSelect(dateKey: string) {
     return;
   }
   selectedDate.value = dateKey;
-  await loadPageBundle();
+  await loadPageBundle(false);
 }
 
 onMounted(() => {
-  loadPageBundle();
+  loadPageBundle(true);
 });
 </script>
 
@@ -92,7 +93,7 @@ onMounted(() => {
     <div class="hero-card">
       <div class="hero-title">{{ texts.heroTitle }}</div>
       <div class="hero-desc">{{ texts.heroDesc }}</div>
-      <button class="hero-action" :disabled="loading" @click="loadPageBundle">{{ texts.refreshAction }}</button>
+      <button class="hero-action" :disabled="loading" @click="loadPageBundle(true)">{{ texts.refreshAction }}</button>
     </div>
 
     <div v-if="!meicanLoggedIn || !recommendUserId" class="empty-card">

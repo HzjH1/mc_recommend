@@ -12,8 +12,8 @@ import {
   type DietProfile,
 } from '../shared/dietProfile';
 import { getTranslations } from '../shared/i18n';
+import { sendPhoneVerificationCode, syncMeicanProfileByPhone } from '../shared/meicanAuth';
 import { clearMeicanSession, sessionState } from '../shared/meicanSession';
-import { sendPhoneVerificationCode, syncMeicanProfileByPhone } from '../shared/mockMeicanAuth';
 import { stableRecommendUserId } from '../shared/recommendUserId';
 import { showToast } from '../shared/toast';
 import { phoneRegCheck } from '../shared/util';
@@ -106,8 +106,8 @@ async function handleSendCode() {
   try {
     await sendPhoneVerificationCode(phone);
     showToast(commonTexts.value.sendCodeSuccess);
-  } catch {
-    showToast(commonTexts.value.sendCodeFailed);
+  } catch (err: any) {
+    showToast(String(err?.message || commonTexts.value.sendCodeFailed));
   } finally {
     codeSending.value = false;
   }
@@ -188,8 +188,8 @@ async function submitForm() {
       }
       router.replace('/home');
     }, 260);
-  } catch {
-    showToast(commonTexts.value.meicanLoginFailed);
+  } catch (err: any) {
+    showToast(String(err?.message || commonTexts.value.meicanLoginFailed));
     window.setTimeout(() => {
       if (window.history.length > 1) {
         router.back();

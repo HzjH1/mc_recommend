@@ -211,12 +211,13 @@ RECOMMENDATION_WEEKLY_REQUIRE_SUNDAY = os.environ.get('RECOMMENDATION_WEEKLY_REQ
 
 # 服务端拉取美餐菜单（与 mc1 Forward 一致）；未配置时推荐任务仍依赖小程序 week-sync 上报
 MEICAN_FORWARD_BASE_URL = os.environ.get('MEICAN_FORWARD_BASE_URL', 'https://www.meican.com/forward')
-MEICAN_FORWARD_CLIENT_ID = os.environ.get('MEICAN_FORWARD_CLIENT_ID', '')
-MEICAN_FORWARD_CLIENT_SECRET = os.environ.get('MEICAN_FORWARD_CLIENT_SECRET', '')
+MEICAN_FORWARD_CLIENT_ID = os.environ.get('MEICAN_FORWARD_CLIENT_ID', 'Xqr8w0Uk4ciodqfPwjhav5rdxTaYepD')
+MEICAN_FORWARD_CLIENT_SECRET = os.environ.get('MEICAN_FORWARD_CLIENT_SECRET', 'vD11O6xI9bG3kqYRu9OyPAHkRGxLh4E')
 # 与 mc1 一致：Forward 未配置时可回退为 GraphQL client（仅作环境变量兜底，优先用库表 meican_client_config）
-MEICAN_GRAPHQL_CLIENT_ID = os.environ.get('MEICAN_GRAPHQL_CLIENT_ID', '')
-MEICAN_GRAPHQL_CLIENT_SECRET = os.environ.get('MEICAN_GRAPHQL_CLIENT_SECRET', '')
+MEICAN_GRAPHQL_CLIENT_ID = os.environ.get('MEICAN_GRAPHQL_CLIENT_ID', 'WYAiIJZPc8e21UHcKHVUeVo2SpNVrni')
+MEICAN_GRAPHQL_CLIENT_SECRET = os.environ.get('MEICAN_GRAPHQL_CLIENT_SECRET', 'WbRV03U0MyQzRhXrvXhyopkavkIRaBg')
 MEICAN_GRAPHQL_APP = os.environ.get('MEICAN_GRAPHQL_APP', 'meican/web-pc (prod;4.90.1;sys;main)')
+MEICAN_GRAPHQL_REFERER = os.environ.get('MEICAN_GRAPHQL_REFERER', 'https://www.meican.com/').strip()
 # 与小程序 wx.request 实际行为接近：桌面 Chrome UA 易被美餐返回空列表；留空则用下方默认「类微信」UA
 _default_meican_ua = (
     'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) '

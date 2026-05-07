@@ -125,6 +125,35 @@ export type AutoOrderConfig = {
   effectiveTo: string | null;
 };
 
+export type MeicanSessionPayload = {
+  phone: string;
+  accessToken: string;
+  refreshToken: string;
+  ticket: string;
+  snowflakeId: string;
+  signature: string;
+  selectedAccountName: string;
+  accountNamespace: string;
+  accountNamespaceLunch: string;
+  accountNamespaceDinner: string;
+  accessTokenExpiresIn: number;
+};
+
+export type MeicanProfilePayload = {
+  meicanName: string;
+  meicanMemberId: string;
+  meicanExternalMemberId?: string;
+  meicanEmployeeNo: string;
+  email: string;
+  phone: string;
+  avatarText: string;
+  corpNames: string[];
+  meicanCorpNamespace: string;
+  userType: string;
+  balance: string;
+  accountStatus: string;
+};
+
 export async function getDailyRecommendations(
   userId: string,
   params: { date: string; namespace?: string } ,
@@ -243,5 +272,22 @@ export async function postManualOrderCancel(
   return requestJson(`/api/v1/users/${encodeURIComponent(userId)}/orders/cancel`, {
     method: 'POST',
     body: JSON.stringify(payload),
+  });
+}
+
+export async function sendMeicanPhoneVerificationCode(phone: string): Promise<{ phone: string; raw: unknown }> {
+  return requestJson('/api/v1/meican/auth/send-code', {
+    method: 'POST',
+    body: JSON.stringify({ phone }),
+  });
+}
+
+export async function loginMeicanByPhone(params: {
+  phone: string;
+  verificationCode: string;
+}): Promise<{ userId: string; session: MeicanSessionPayload; profile: MeicanProfilePayload; raw?: unknown }> {
+  return requestJson('/api/v1/meican/auth/login', {
+    method: 'POST',
+    body: JSON.stringify(params),
   });
 }

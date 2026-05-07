@@ -6,6 +6,14 @@ import path from 'node:path';
 export default defineConfig({
   plugins: [vue()],
   base: '/static/web/',
+  server: {
+    proxy: {
+      '/api': {
+        target: process.env.VITE_DEV_BACKEND_ORIGIN || 'http://127.0.0.1:8000',
+        changeOrigin: true,
+      },
+    },
+  },
   build: {
     outDir: path.resolve(__dirname, '../wxcloudrun/static/web'),
     emptyOutDir: true,
@@ -13,4 +21,3 @@ export default defineConfig({
     sourcemap: false,
   },
 });
-

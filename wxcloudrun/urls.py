@@ -28,6 +28,9 @@ urlpatterns = (
     url(r'^^api/v1/users/(?P<user_id>\d+)/auto-order-config(/)?$', v1_views.user_auto_order_config),
     # V1-美餐会话（小程序登录后上报）
     url(r'^^api/v1/users/(?P<user_id>\d+)/meican-session(/)?$', v1_views.put_user_meican_session),
+    # V1-Web 美餐验证码与登录代理
+    url(r'^^api/v1/meican/auth/send-code(/)?$', v1_views.post_meican_send_phone_verification_code),
+    url(r'^^api/v1/meican/auth/login(/)?$', v1_views.post_meican_phone_login),
     # V1-菜单快照同步（小程序上报美餐菜单，供推荐/自动点餐使用）
     url(r'^^api/v1/users/(?P<user_id>\d+)/menu/week-sync(/)?$', v1_views.post_user_menu_week_sync),
     # V1-菜单周视图（Web/H5）
