@@ -97,6 +97,24 @@ export type DailyRecommendations = {
   date: string;
   LUNCH: DailyRecItem[];
   DINNER: DailyRecItem[];
+  orderedMeals?: {
+    LUNCH?: {
+      menuItemId: number | null;
+      dishName: string;
+      restaurantName: string;
+      priceCent: number | null;
+      orderRecordId: number;
+      status: string;
+    } | null;
+    DINNER?: {
+      menuItemId: number | null;
+      dishName: string;
+      restaurantName: string;
+      priceCent: number | null;
+      orderRecordId: number;
+      status: string;
+    } | null;
+  };
 };
 
 export type WeeklyMenuDish = {

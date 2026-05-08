@@ -1703,7 +1703,29 @@ def get_daily_recommendations(request, user_id):
         x.meal_slot: x for x in OrderRecord.objects.filter(user=user, date=date_val, status='CREATED')
     }
 
-    result = {'date': str(date_val), 'LUNCH': [], 'DINNER': []}
+    result = {
+        'date': str(date_val),
+        'LUNCH': [],
+        'DINNER': [],
+        'orderedMeals': {
+            MealSlot.LUNCH: None,
+            MealSlot.DINNER: None,
+        },
+    }
+    for slot in [MealSlot.LUNCH, MealSlot.DINNER]:
+        od = order_map.get(slot)
+        if not od:
+            continue
+        mi = od.menu_item
+        result['orderedMeals'][slot] = {
+            'menuItemId': mi.id if mi else None,
+            'dishName': (mi.dish_name if mi else ''),
+            'restaurantName': (mi.restaurant_name if mi else ''),
+            'priceCent': (mi.price_cent if mi else None),
+            'orderRecordId': od.id,
+            'status': od.status,
+        }
+
     for slot in [MealSlot.LUNCH, MealSlot.DINNER]:
         batch_qs = RecommendationBatch.objects.filter(date=date_val, meal_slot=slot).order_by('-version', '-id')
         if namespace:
@@ -1719,6 +1741,11 @@ def get_daily_recommendations(request, user_id):
             .order_by('rank_no')[:3]
         )
         slot_data = []
+        ordered_menu_item_id = (
+            result['orderedMeals'][slot]['menuItemId']
+            if isinstance(result['orderedMeals'].get(slot), dict)
+            else None
+        )
         for rec in recs:
             item = rec.menu_item
             slot_data.append({
@@ -1729,7 +1756,7 @@ def get_daily_recommendations(request, user_id):
                 'priceCent': item.price_cent,
                 'score': float(rec.score),
                 'reason': rec.reason,
-                'ordered': slot in order_map,
+                'ordered': bool(ordered_menu_item_id and item.id == ordered_menu_item_id),
             })
         result[str(slot)] = slot_data
 

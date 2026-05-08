@@ -38,6 +38,8 @@ type RecommendDay = {
   isToday: boolean;
   lunchRecs: RecommendRow[];
   dinnerRecs: RecommendRow[];
+  orderedLunchExtra: RecommendRow | null;
+  orderedDinnerExtra: RecommendRow | null;
 };
 
 const router = useRouter();
@@ -95,7 +97,7 @@ function attachOrderButtons(rows: RecommendRow[]): RecommendRow[] {
   }));
 }
 
-function mapRecommendRows(list: any[] = []) {
+function mapRecommendRows(list: any[] = [], orderedMenuItemId: number | null = null): RecommendRow[] {
   return attachOrderButtons(
     list.slice(0, 3).map((item) => ({
       id: Number(item.menuItemId),
@@ -108,7 +110,7 @@ function mapRecommendRows(list: any[] = []) {
           : '',
       reason: `${item.reason || ''}`.trim(),
       statusText: item.ordered ? texts.value.orderedBadge : texts.value.recommendAvailable,
-      orderedFromRecommend: !!item.ordered,
+      orderedFromRecommend: !!item.ordered || (!!orderedMenuItemId && Number(item.menuItemId) === Number(orderedMenuItemId)),
       orderBtn: 'place' as const,
     })),
   );
@@ -135,6 +137,16 @@ function updateSelectedDay() {
   lunchRecsShown.value = day.lunchRecs;
   dinnerRecsShown.value = day.dinnerRecs;
 }
+
+const orderedLunchExtraShown = computed(() => {
+  const day = recommendWeek.value.find((item) => item.dateKey === selectedRecommendDate.value);
+  return day?.orderedLunchExtra || null;
+});
+
+const orderedDinnerExtraShown = computed(() => {
+  const day = recommendWeek.value.find((item) => item.dateKey === selectedRecommendDate.value);
+  return day?.orderedDinnerExtra || null;
+});
 
 function parseLocalDateStart(dateKey: string) {
   if (!dateKey) return null;
@@ -225,11 +237,36 @@ async function refreshPage() {
       ),
     );
 
-    recommendWeek.value = skeleton.map((day, index) => ({
-      ...day,
-      lunchRecs: mapRecommendRows(results[index]?.LUNCH || []),
-      dinnerRecs: mapRecommendRows(results[index]?.DINNER || []),
-    }));
+    recommendWeek.value = skeleton.map((day, index) => {
+      const daily = results[index];
+      const lunchOrdered = daily?.orderedMeals?.LUNCH || null;
+      const dinnerOrdered = daily?.orderedMeals?.DINNER || null;
+      const lunchRows = mapRecommendRows(daily?.LUNCH || [], lunchOrdered?.menuItemId || null);
+      const dinnerRows = mapRecommendRows(daily?.DINNER || [], dinnerOrdered?.menuItemId || null);
+      const lunchInTop3 = lunchRows.some((row) => row.id === Number(lunchOrdered?.menuItemId || 0));
+      const dinnerInTop3 = dinnerRows.some((row) => row.id === Number(dinnerOrdered?.menuItemId || 0));
+      const mkExtra = (src: any): RecommendRow => ({
+        id: Number(src?.menuItemId || 0),
+        rankNo: 0,
+        name: src?.dishName || '已点餐品',
+        restaurant: `${src?.restaurantName || ''}`.trim(),
+        price:
+          src?.priceCent !== undefined && src?.priceCent !== null && !Number.isNaN(Number(src?.priceCent))
+            ? (Number(src.priceCent) / 100).toFixed(2)
+            : '',
+        reason: '已点餐品（不在推荐 Top3）',
+        statusText: texts.value.orderedBadge,
+        orderedFromRecommend: true,
+        orderBtn: 'ordered',
+      });
+      return {
+        ...day,
+        lunchRecs: lunchRows,
+        dinnerRecs: dinnerRows,
+        orderedLunchExtra: lunchOrdered && !lunchInTop3 ? mkExtra(lunchOrdered) : null,
+        orderedDinnerExtra: dinnerOrdered && !dinnerInTop3 ? mkExtra(dinnerOrdered) : null,
+      };
+    });
 
     updateSelectedDay();
 
@@ -535,7 +572,7 @@ onUnmounted(() => {
 
           <div class="subsection-title">{{ texts.lunchSlot }}</div>
           <template v-if="lunchRecsShown.length">
-            <div v-for="row in lunchRecsShown" :key="`l-${row.id}`" class="menu-item">
+            <div v-for="row in lunchRecsShown" :key="`l-${row.id}`" class="menu-item" :class="{ 'menu-item-ordered': row.orderedFromRecommend }">
               <div class="menu-item-top">
                 <div class="menu-main">
                   <div class="menu-name-row">
@@ -579,12 +616,36 @@ onUnmounted(() => {
               </div>
               <div v-if="isSlotOrderExpired('LUNCH')" class="order-timeout-hint">已超过点餐时间</div>
             </div>
+            <div v-if="orderedLunchExtraShown" class="menu-item menu-item-ordered">
+              <div class="menu-item-top">
+                <div class="menu-main">
+                  <div class="menu-name-row">
+                    <span class="menu-name">{{ orderedLunchExtraShown.name }}</span>
+                  </div>
+                  <div class="menu-sub" v-if="orderedLunchExtraShown.restaurant">{{ orderedLunchExtraShown.restaurant }}</div>
+                  <div class="menu-sub muted">已点餐品（不在推荐 Top3）</div>
+                </div>
+                <div class="menu-side">
+                  <div class="menu-price" v-if="orderedLunchExtraShown.price">¥{{ orderedLunchExtraShown.price }}</div>
+                  <div class="menu-status">{{ orderedLunchExtraShown.statusText }}</div>
+                </div>
+              </div>
+              <div class="rec-order-row">
+                <button
+                  class="rec-order-pill rec-order-pill-cancel"
+                  :disabled="loading || isSlotOrderExpired('LUNCH')"
+                  @click="handleRecommendOrderTap('LUNCH', 'cancel', orderedLunchExtraShown)"
+                >
+                  {{ texts.recommendCancelOrderBtn }}
+                </button>
+              </div>
+            </div>
           </template>
           <div v-else class="placeholder-row">{{ texts.recommendSlotEmpty }}</div>
 
           <div class="subsection-title">{{ texts.dinnerSlot }}</div>
           <template v-if="dinnerRecsShown.length">
-            <div v-for="row in dinnerRecsShown" :key="`d-${row.id}`" class="menu-item">
+            <div v-for="row in dinnerRecsShown" :key="`d-${row.id}`" class="menu-item" :class="{ 'menu-item-ordered': row.orderedFromRecommend }">
               <div class="menu-item-top">
                 <div class="menu-main">
                   <div class="menu-name-row">
@@ -627,6 +688,30 @@ onUnmounted(() => {
                 </button>
               </div>
               <div v-if="isSlotOrderExpired('DINNER')" class="order-timeout-hint">已超过点餐时间</div>
+            </div>
+            <div v-if="orderedDinnerExtraShown" class="menu-item menu-item-ordered">
+              <div class="menu-item-top">
+                <div class="menu-main">
+                  <div class="menu-name-row">
+                    <span class="menu-name">{{ orderedDinnerExtraShown.name }}</span>
+                  </div>
+                  <div class="menu-sub" v-if="orderedDinnerExtraShown.restaurant">{{ orderedDinnerExtraShown.restaurant }}</div>
+                  <div class="menu-sub muted">已点餐品（不在推荐 Top3）</div>
+                </div>
+                <div class="menu-side">
+                  <div class="menu-price" v-if="orderedDinnerExtraShown.price">¥{{ orderedDinnerExtraShown.price }}</div>
+                  <div class="menu-status">{{ orderedDinnerExtraShown.statusText }}</div>
+                </div>
+              </div>
+              <div class="rec-order-row">
+                <button
+                  class="rec-order-pill rec-order-pill-cancel"
+                  :disabled="loading || isSlotOrderExpired('DINNER')"
+                  @click="handleRecommendOrderTap('DINNER', 'cancel', orderedDinnerExtraShown)"
+                >
+                  {{ texts.recommendCancelOrderBtn }}
+                </button>
+              </div>
             </div>
           </template>
           <div v-else class="placeholder-row">{{ texts.recommendSlotEmpty }}</div>
@@ -949,6 +1034,14 @@ onUnmounted(() => {
   gap: 14px;
   padding: 20px 0;
   border-bottom: 1px solid #f0e5d9;
+}
+
+.menu-item-ordered {
+  background: rgba(34, 197, 94, 0.06);
+  border-radius: 12px;
+  padding: 16px 14px;
+  margin-top: 10px;
+  border-bottom: none;
 }
 
 .menu-item:last-child {
