@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import {
   getAutoOrderConfig,
@@ -52,6 +52,8 @@ const recommendDayTitle = ref('');
 const recommendDayIsToday = ref(false);
 const autoOrderEnabled = ref(false);
 const autoOrderMeta = ref<AutoOrderConfig | null>(null);
+const nowMs = ref(Date.now());
+let nowTimer: ReturnType<typeof setInterval> | null = null;
 
 const addressSheetOpen = ref(false);
 const addressSheetTitle = ref('');
@@ -85,11 +87,11 @@ function activeNamespace(slot?: 'LUNCH' | 'DINNER') {
   return `${session.value.accountNamespace || ''}`.trim();
 }
 
-function attachOrderButtons(rows: RecommendRow[]) {
+function attachOrderButtons(rows: RecommendRow[]): RecommendRow[] {
   const hasOrderedRow = rows.some((row) => row.orderedFromRecommend);
   return rows.map((row) => ({
     ...row,
-    orderBtn: row.orderedFromRecommend ? 'ordered' : hasOrderedRow ? 'change' : 'place',
+    orderBtn: (row.orderedFromRecommend ? 'ordered' : hasOrderedRow ? 'change' : 'place') as RecommendRow['orderBtn'],
   }));
 }
 
@@ -132,6 +134,29 @@ function updateSelectedDay() {
   recommendDayIsToday.value = day.isToday;
   lunchRecsShown.value = day.lunchRecs;
   dinnerRecsShown.value = day.dinnerRecs;
+}
+
+function parseLocalDateStart(dateKey: string) {
+  if (!dateKey) return null;
+  const dt = new Date(`${dateKey}T00:00:00`);
+  return Number.isNaN(dt.getTime()) ? null : dt;
+}
+
+function isSlotOrderExpired(slot: 'LUNCH' | 'DINNER') {
+  if (!selectedRecommendDate.value) return false;
+  const targetDay = parseLocalDateStart(selectedRecommendDate.value);
+  if (!targetDay) return false;
+  const now = new Date(nowMs.value);
+  const todayStart = new Date(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}T00:00:00`);
+  if (targetDay.getTime() < todayStart.getTime()) {
+    return true;
+  }
+  if (targetDay.getTime() > todayStart.getTime()) {
+    return false;
+  }
+  const hhmm = now.getHours() * 60 + now.getMinutes();
+  const cutoff = slot === 'LUNCH' ? 10 * 60 : 16 * 60;
+  return hhmm > cutoff;
 }
 
 async function chooseAddress(title: string, options: AddressOption[]) {
@@ -334,6 +359,10 @@ async function handleRecommendOrderTap(slot: 'LUNCH' | 'DINNER', action: 'place'
   if (!hasRecommendUser.value || !selectedRecommendDate.value) {
     return;
   }
+  if (isSlotOrderExpired(slot)) {
+    showToast('已超过点餐时间');
+    return;
+  }
 
   const namespace = activeNamespace(slot);
   if (!namespace) {
@@ -396,7 +425,15 @@ function handleAutoOrderRuleTip() {
 }
 
 onMounted(() => {
+  nowTimer = setInterval(() => {
+    nowMs.value = Date.now();
+  }, 30 * 1000);
   refreshPage();
+});
+
+onUnmounted(() => {
+  if (nowTimer) clearInterval(nowTimer);
+  nowTimer = null;
 });
 </script>
 
@@ -518,7 +555,7 @@ onMounted(() => {
                 <button
                   v-if="row.orderBtn === 'ordered'"
                   class="rec-order-pill rec-order-pill-cancel"
-                  :disabled="loading"
+                  :disabled="loading || isSlotOrderExpired('LUNCH')"
                   @click="handleRecommendOrderTap('LUNCH', 'cancel', row)"
                 >
                   {{ texts.recommendCancelOrderBtn }}
@@ -526,7 +563,7 @@ onMounted(() => {
                 <button
                   v-else-if="row.orderBtn === 'place'"
                   class="rec-order-pill rec-order-pill-primary"
-                  :disabled="loading"
+                  :disabled="loading || isSlotOrderExpired('LUNCH')"
                   @click="handleRecommendOrderTap('LUNCH', 'place', row)"
                 >
                   {{ texts.recommendOrderBtn }}
@@ -534,12 +571,13 @@ onMounted(() => {
                 <button
                   v-else
                   class="rec-order-pill rec-order-pill-change"
-                  :disabled="loading"
+                  :disabled="loading || isSlotOrderExpired('LUNCH')"
                   @click="handleRecommendOrderTap('LUNCH', 'change', row)"
                 >
                   {{ texts.recommendChangeOrderBtn }}
                 </button>
               </div>
+              <div v-if="isSlotOrderExpired('LUNCH')" class="order-timeout-hint">已超过点餐时间</div>
             </div>
           </template>
           <div v-else class="placeholder-row">{{ texts.recommendSlotEmpty }}</div>
@@ -566,7 +604,7 @@ onMounted(() => {
                 <button
                   v-if="row.orderBtn === 'ordered'"
                   class="rec-order-pill rec-order-pill-cancel"
-                  :disabled="loading"
+                  :disabled="loading || isSlotOrderExpired('DINNER')"
                   @click="handleRecommendOrderTap('DINNER', 'cancel', row)"
                 >
                   {{ texts.recommendCancelOrderBtn }}
@@ -574,7 +612,7 @@ onMounted(() => {
                 <button
                   v-else-if="row.orderBtn === 'place'"
                   class="rec-order-pill rec-order-pill-primary"
-                  :disabled="loading"
+                  :disabled="loading || isSlotOrderExpired('DINNER')"
                   @click="handleRecommendOrderTap('DINNER', 'place', row)"
                 >
                   {{ texts.recommendOrderBtn }}
@@ -582,12 +620,13 @@ onMounted(() => {
                 <button
                   v-else
                   class="rec-order-pill rec-order-pill-change"
-                  :disabled="loading"
+                  :disabled="loading || isSlotOrderExpired('DINNER')"
                   @click="handleRecommendOrderTap('DINNER', 'change', row)"
                 >
                   {{ texts.recommendChangeOrderBtn }}
                 </button>
               </div>
+              <div v-if="isSlotOrderExpired('DINNER')" class="order-timeout-hint">已超过点餐时间</div>
             </div>
           </template>
           <div v-else class="placeholder-row">{{ texts.recommendSlotEmpty }}</div>
@@ -987,6 +1026,11 @@ onMounted(() => {
   cursor: pointer;
 }
 
+.rec-order-pill:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 .rec-order-pill-primary {
   background: #2f2418;
   color: #fff6ea;
@@ -1006,6 +1050,14 @@ onMounted(() => {
   padding: 20px 0;
   color: #8d775f;
   font-size: 14px;
+}
+
+.order-timeout-hint {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: -8px;
+  color: #a08974;
+  font-size: 11px;
 }
 
 .error-card {
