@@ -9,6 +9,7 @@ forward 优先，缺省则 graphql。
 """
 import uuid
 from typing import Tuple
+from urllib.parse import urlsplit, urlunsplit
 
 from django.conf import settings
 
@@ -59,10 +60,23 @@ def resolve_graphql_credentials() -> Tuple[str, str]:
 
 
 def resolve_forward_base_url() -> str:
+    def _normalize_forward_base_url(raw_value: str) -> str:
+        base = str(raw_value or '').strip().rstrip('/')
+        if not base:
+            return 'https://www.meican.com/forward'
+        parsed = urlsplit(base)
+        if not parsed.scheme or not parsed.netloc:
+            return base
+        path = (parsed.path or '').rstrip('/')
+        if path in {'', '/'}:
+            path = '/forward'
+        normalized = parsed._replace(path=path, query='', fragment='')
+        return urlunsplit(normalized).rstrip('/')
+
     row = get_meican_client_config_row()
     if row is not None and (row.forward_base_url or '').strip():
-        return str(row.forward_base_url).strip().rstrip('/')
-    return (getattr(settings, 'MEICAN_FORWARD_BASE_URL', None) or 'https://www.meican.com/forward').rstrip('/')
+        return _normalize_forward_base_url(str(row.forward_base_url))
+    return _normalize_forward_base_url(getattr(settings, 'MEICAN_FORWARD_BASE_URL', None) or 'https://www.meican.com/forward')
 
 
 def resolve_graphql_app() -> str:
