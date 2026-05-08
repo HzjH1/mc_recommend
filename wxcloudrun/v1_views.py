@@ -42,7 +42,12 @@ from wxcloudrun.meican_client_config import (
     resolve_graphql_app,
     resolve_x_mc_device,
 )
-from wxcloudrun.recommendation_service import run_weekly_recommendation_job
+from wxcloudrun.recommendation_service import (
+    refresh_recommendations_for_user_slot,
+    resolve_snapshot_recommendation_dates,
+    resolve_week_start_monday,
+    run_weekly_recommendation_job,
+)
 
 # settings.LOGGING 仅显式配置了 logger "log"，这里统一走该通道，确保落盘到 all-*.log
 logger = logging.getLogger('log')
@@ -920,6 +925,48 @@ def _within_auto_order_window(date_val, meal_slot):
     return now_t <= dinner_deadline
 
 
+def _trigger_initial_recommendations_for_new_user(user: UserAccount, namespace: str):
+    """
+    新用户首次登录后，为该用户触发一次推荐生成：
+    - 以当前业务周为基准（周日按下周）
+    - 优先使用 menu_snapshot 已存在的工作日，缺失时回退 5 个工作日
+    - 午/晚餐各跑一次，失败仅打日志，不阻断登录流程
+    """
+    ns = str(namespace or '').strip()
+    if not ns:
+        return
+    try:
+        monday = resolve_week_start_monday(None, None)
+        dates = resolve_snapshot_recommendation_dates(ns, monday, fallback_workdays=5)
+        for day in dates:
+            for slot in (MealSlot.LUNCH, MealSlot.DINNER):
+                out = refresh_recommendations_for_user_slot(
+                    user,
+                    ns,
+                    day,
+                    slot,
+                    freeze=False,
+                    top_n=3,
+                    sync_menu_if_missing=True,
+                )
+                if not out.get('ok'):
+                    logger.info(
+                        'initial_recommendation.skipped user_id=%s namespace=%s day=%s slot=%s reason=%s',
+                        user.id,
+                        ns,
+                        day,
+                        slot,
+                        out.get('skip', 'unknown'),
+                    )
+    except Exception as exc:
+        logger.warning(
+            'initial_recommendation.failed user_id=%s namespace=%s err=%s',
+            user.id,
+            ns,
+            exc,
+        )
+
+
 def _format_price_value(value):
     if value in (None, ''):
         return ''
@@ -1153,6 +1200,8 @@ def post_meican_phone_login(request, *_args, **_kwargs):
         user = _ensure_user(member_id, phone=phone)
         ttl = int(session_payload.get('accessTokenExpiresIn') or 3600)
         token_expire_at = timezone.now() + timedelta(seconds=ttl if ttl > 0 else 3600)
+        existing_acc = UserMeicanAccount.objects.filter(user=user).first()
+        is_first_bind = not existing_acc or not bool(existing_acc.is_bound)
         UserMeicanAccount.objects.update_or_create(
             user=user,
             defaults={
@@ -1207,6 +1256,8 @@ def post_meican_phone_login(request, *_args, **_kwargs):
             'accountNamespaceDinner': str(session_payload.get('accountNamespaceDinner') or session_payload.get('accountNamespace') or '').strip(),
             'accessTokenExpiresIn': ttl if ttl > 0 else 3600,
         }
+        if is_first_bind:
+            _trigger_initial_recommendations_for_new_user(user, fallback_namespace)
         return _resp(data={'userId': user.id, 'session': response_session, 'profile': response_profile, 'raw': bundle.get('raw') if isinstance(bundle, dict) else {}})
     except Exception as exc:
         logger.warning('meican.phone_login_failed phone=%s err=%s', phone, exc)
@@ -1422,6 +1473,7 @@ def put_user_meican_session(request, user_id):
     namespace_lunch = namespace_lunch_in or (existing.account_namespace_lunch if existing else '') or namespace
     namespace_dinner = namespace_dinner_in or (existing.account_namespace_dinner if existing else '') or namespace
 
+    is_first_bind = not existing or not bool(existing.is_bound)
     obj, _ = UserMeicanAccount.objects.update_or_create(
         user=user,
         defaults={
@@ -1436,6 +1488,8 @@ def put_user_meican_session(request, user_id):
             'is_bound': 1,
         },
     )
+    if is_first_bind:
+        _trigger_initial_recommendations_for_new_user(user, namespace)
     return _resp(data={'userId': user.id, 'meicanAccountId': obj.id, 'tokenExpireAt': token_expire_at.isoformat()})
 
 
