@@ -973,9 +973,21 @@ def _ensure_session_namespaces_with_token(access_token: str, selected_account_na
 
 
 def _fetch_meican_user_bundle_with_token(access_token: str, selected_account_name=''):
-    account_info = _fetch_account_info_with_token(access_token)
-    real_name = _fetch_real_name_with_token(access_token)
-    payment_accounts = _fetch_payment_accounts_with_token(access_token)
+    try:
+        account_info = _fetch_account_info_with_token(access_token)
+    except Exception as exc:
+        logger.warning('meican.bundle.account_info_failed err=%s', exc)
+        account_info = {}
+    try:
+        real_name = _fetch_real_name_with_token(access_token)
+    except Exception as exc:
+        logger.warning('meican.bundle.real_name_failed err=%s', exc)
+        real_name = {}
+    try:
+        payment_accounts = _fetch_payment_accounts_with_token(access_token)
+    except Exception as exc:
+        logger.warning('meican.bundle.payment_accounts_failed err=%s', exc)
+        payment_accounts = []
     corps = _ensure_list(_pick_first(account_info, ['corps', 'corpList', 'companies'], []))
     corp_names = [str(_pick_first(corp, ['name', 'corpName', 'companyName'], '')).strip() for corp in corps if isinstance(corp, dict)]
     corp_names = [x for x in corp_names if x]
@@ -1155,9 +1167,31 @@ def post_meican_phone_login(request, *_args, **_kwargs):
                 'is_bound': 1,
             },
         )
+        fallback_display_name = str(
+            profile.get('meicanName')
+            or session_payload.get('selectedAccountName')
+            or phone[-4:]
+            or '美'
+        ).strip()
+        fallback_namespace = str(
+            session_payload.get('accountNamespace')
+            or session_payload.get('accountNamespaceDinner')
+            or session_payload.get('accountNamespaceLunch')
+            or profile.get('meicanCorpNamespace')
+            or ''
+        ).strip()
         response_profile = {
-            **profile,
+            'meicanName': fallback_display_name,
+            'meicanMemberId': member_id,
+            'meicanEmployeeNo': str(profile.get('meicanEmployeeNo') or '').strip(),
+            'email': str(profile.get('email') or '').strip(),
             'phone': phone,
+            'avatarText': str(profile.get('avatarText') or (fallback_display_name[:1] or '美')).strip()[:1] or '美',
+            'corpNames': profile.get('corpNames') if isinstance(profile.get('corpNames'), list) else [],
+            'meicanCorpNamespace': fallback_namespace,
+            'userType': str(profile.get('userType') or '').strip(),
+            'balance': str(profile.get('balance') or '').strip(),
+            'accountStatus': str(profile.get('accountStatus') or '').strip(),
             'meicanExternalMemberId': phone,
         }
         response_session = {
@@ -1168,7 +1202,7 @@ def post_meican_phone_login(request, *_args, **_kwargs):
             'snowflakeId': str(session_payload.get('snowflakeId') or member_id).strip(),
             'signature': str(session_payload.get('signature') or '').strip(),
             'selectedAccountName': str(session_payload.get('selectedAccountName') or '').strip(),
-            'accountNamespace': str(session_payload.get('accountNamespace') or profile.get('meicanCorpNamespace') or '').strip(),
+            'accountNamespace': fallback_namespace,
             'accountNamespaceLunch': str(session_payload.get('accountNamespaceLunch') or session_payload.get('accountNamespace') or '').strip(),
             'accountNamespaceDinner': str(session_payload.get('accountNamespaceDinner') or session_payload.get('accountNamespace') or '').strip(),
             'accessTokenExpiresIn': ttl if ttl > 0 else 3600,
