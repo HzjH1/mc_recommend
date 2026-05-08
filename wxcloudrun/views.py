@@ -23,10 +23,26 @@ def _normalize_base_url(value):
     return str(value or '').strip().rstrip('/')
 
 
+def _request_origin_with_forwarded_proto(request):
+    """
+    在反向代理（如云托管）后优先使用 X-Forwarded-Proto/Host 还原外部访问域名与协议，
+    避免 web runtime config 注入 http 导致浏览器 Mixed Content。
+    """
+    forwarded_proto = str(request.META.get('HTTP_X_FORWARDED_PROTO') or '').split(',')[0].strip().lower()
+    forwarded_host = str(request.META.get('HTTP_X_FORWARDED_HOST') or '').split(',')[0].strip()
+    if forwarded_proto in {'http', 'https'} and forwarded_host:
+        return f'{forwarded_proto}://{forwarded_host}'
+    if forwarded_proto in {'http', 'https'}:
+        host = request.get_host()
+        if host:
+            return f'{forwarded_proto}://{host}'
+    return _normalize_base_url(request.build_absolute_uri('/'))
+
+
 def _build_web_runtime_config(request):
     backend_api_base = _normalize_base_url(getattr(settings, 'WEB_BACKEND_API_BASE', ''))
     meican_api_base = _normalize_base_url(getattr(settings, 'WEB_MEICAN_API_BASE', ''))
-    request_origin = _normalize_base_url(request.build_absolute_uri('/'))
+    request_origin = _request_origin_with_forwarded_proto(request)
     if not backend_api_base:
         backend_api_base = request_origin
     if not meican_api_base:
