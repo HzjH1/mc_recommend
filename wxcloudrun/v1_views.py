@@ -1583,6 +1583,42 @@ def _is_meican_recommended(raw_json):
     return source_val in {'recommendation', 'recommended', 'meican_recommendation'}
 
 
+def _resolve_menu_item_restaurant(item: MenuItem):
+    raw = item.raw_json if isinstance(item.raw_json, dict) else {}
+    rid = str(
+        _pick_first(
+            raw,
+            [
+                'restaurantId',
+                'restaurant_id',
+                'restaurant.uniqueId',
+                'restaurant.id',
+                'vendorId',
+                'shopId',
+            ],
+            item.restaurant_id or '',
+        )
+        or ''
+    ).strip()
+    rname = str(
+        _pick_first(
+            raw,
+            [
+                'restaurantName',
+                'restaurant_name',
+                'restaurant.name',
+                'restaurant.displayName',
+                'vendorName',
+                'shopName',
+                'canteenName',
+            ],
+            item.restaurant_name or '',
+        )
+        or ''
+    ).strip()
+    return rid[:64], rname[:128]
+
+
 def _build_meal_sections_from_snapshots(snapshots):
     sections = []
     for snap in snapshots:
@@ -1592,18 +1628,20 @@ def _build_meal_sections_from_snapshots(snapshots):
         fallback_recommended = []
         for item in items:
             status = _normalize_menu_status(item.status)
+            rid, rname = _resolve_menu_item_restaurant(item)
             row = {
                 'id': item.id,
                 'name': item.dish_name,
                 'price': f'{(item.price_cent or 0) / 100:.2f}' if item.price_cent else '',
                 'status': status,
                 'statusText': '售罄' if status == 'sold_out' else '可选',
+                'restaurantName': rname or '未知餐厅',
             }
-            rkey = f'{item.restaurant_id or ""}|{item.restaurant_name or ""}'
+            rkey = f'{rid}|{rname}'
             if rkey not in rest_map:
                 rest_map[rkey] = {
-                    'id': item.restaurant_id or '',
-                    'name': item.restaurant_name or '未知餐厅',
+                    'id': rid,
+                    'name': rname or '未知餐厅',
                     'menus': [],
                 }
             rest_map[rkey]['menus'].append(row)
