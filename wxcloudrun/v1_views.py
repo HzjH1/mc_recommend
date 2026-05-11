@@ -581,35 +581,56 @@ def _refresh_user_meican_account_token(acc: UserMeicanAccount) -> bool:
     return True
 
 
-def _forward_json_get(path, query, access_token=''):
+def _forward_json_get(path, query, access_token='', acc: UserMeicanAccount = None, allow_refresh=True):
     cid, csec = resolve_forward_credentials()
     base = resolve_forward_base_url().rstrip('/')
     q = {'client_id': cid, 'client_secret': csec}
     q.update({k: v for k, v in query.items() if v is not None and str(v).strip() != ''})
     url = f'{base}{path}?{urlencode(q)}'
-    req = Request(url, method='GET', headers=_build_forward_headers(access_token))
-    with urlopen(req, timeout=30) as resp:  # nosec B310
-        raw = resp.read().decode('utf-8', errors='replace')
+    token = str(access_token or (acc.access_token if acc else '') or '').strip()
+    req = Request(url, method='GET', headers=_build_forward_headers(token))
+    try:
+        with urlopen(req, timeout=30) as resp:  # nosec B310
+            raw = resp.read().decode('utf-8', errors='replace')
+    except HTTPError as exc:
+        if exc.code == 401 and allow_refresh and acc and str(acc.refresh_token or '').strip():
+            if _refresh_user_meican_account_token(acc):
+                return _forward_json_get(path, query, str(acc.access_token or '').strip(), acc=acc, allow_refresh=False)
+        raise
     return json.loads(raw) if raw else {}
 
 
-def _forward_form_post(path, form_body: str, access_token=''):
+def _forward_form_post(path, form_body: str, access_token='', acc: UserMeicanAccount = None, allow_refresh=True):
     cid, csec = resolve_forward_credentials()
     base = resolve_forward_base_url().rstrip('/')
     url = f'{base}{path}?{urlencode({"client_id": cid, "client_secret": csec})}'
-    headers = _build_forward_headers(access_token)
+    token = str(access_token or (acc.access_token if acc else '') or '').strip()
+    headers = _build_forward_headers(token)
     headers['Content-Type'] = 'application/x-www-form-urlencoded'
     req = Request(url, data=form_body.encode('utf-8'), method='POST', headers=headers)
-    with urlopen(req, timeout=45) as resp:  # nosec B310
-        raw = resp.read().decode('utf-8', errors='replace')
+    try:
+        with urlopen(req, timeout=45) as resp:  # nosec B310
+            raw = resp.read().decode('utf-8', errors='replace')
+    except HTTPError as exc:
+        if exc.code == 401 and allow_refresh and acc and str(acc.refresh_token or '').strip():
+            if _refresh_user_meican_account_token(acc):
+                return _forward_form_post(
+                    path,
+                    form_body,
+                    str(acc.access_token or '').strip(),
+                    acc=acc,
+                    allow_refresh=False,
+                )
+        raise
     return json.loads(raw) if raw else {}
 
 
-def _resolve_default_address_ids(namespace: str, access_token: str):
+def _resolve_default_address_ids(namespace: str, access_token: str, acc: UserMeicanAccount = None):
     payload = _forward_json_get(
         '/api/v2.1/corpaddresses/getmulticorpaddress',
         {'namespace': namespace},
         access_token=access_token,
+        acc=acc,
     )
     first = (
         _ensure_list(_pick_first(payload, ['data.addressList', 'addressList', 'result.addressList'], []))[:1]
@@ -665,11 +686,12 @@ def _resolve_default_address_ids(namespace: str, access_token: str):
     return user_addr, corp_addr
 
 
-def _fetch_address_options(namespace: str, access_token: str):
+def _fetch_address_options(namespace: str, access_token: str, acc: UserMeicanAccount = None):
     payload = _forward_json_get(
         '/api/v2.1/corpaddresses/getmulticorpaddress',
         {'namespace': namespace},
         access_token=access_token,
+        acc=acc,
     )
     rows = []
     rows.extend(_ensure_list(_pick_first(payload, ['data.addressList', 'addressList', 'result.addressList'], [])))
@@ -799,7 +821,7 @@ def _submit_meican_order_for_manual(
     user_addr = str(selected_user_addr or '').strip()
     corp_addr = str(selected_corp_addr or '').strip()
     if not user_addr or not corp_addr:
-        user_addr, corp_addr = _resolve_default_address_ids(ns, str(acc.access_token or '').strip())
+        user_addr, corp_addr = _resolve_default_address_ids(ns, str(acc.access_token or '').strip(), acc=acc)
     dish_for_order = int(ctx['dishId']) if str(ctx['dishId']).isdigit() else ctx['dishId']
     form_body = urlencode(
         {
@@ -822,7 +844,12 @@ def _submit_meican_order_for_manual(
         ctx['targetTime'],
     )
     try:
-        out = _forward_form_post('/api/v2.1/orders/add', form_body, access_token=str(acc.access_token or '').strip())
+        out = _forward_form_post(
+            '/api/v2.1/orders/add',
+            form_body,
+            access_token=str(acc.access_token or '').strip(),
+            acc=acc,
+        )
         logger.info(
             'manual_order.forward_response user_id=%s namespace=%s menu_item_id=%s status=%s message=%s',
             user.id,
@@ -884,7 +911,12 @@ def _cancel_meican_order_for_user(user: UserAccount, order_unique_id: str):
         }
     )
     try:
-        out = _forward_form_post('/api/v2.1/orders/delete', form_body, access_token=str(acc.access_token or '').strip())
+        out = _forward_form_post(
+            '/api/v2.1/orders/delete',
+            form_body,
+            access_token=str(acc.access_token or '').strip(),
+            acc=acc,
+        )
         logger.info(
             'manual_order.forward_delete_response user_id=%s order_unique_id=%s status=%s message=%s',
             user.id,
@@ -1816,7 +1848,7 @@ def get_user_order_addresses(request, user_id):
     if not namespace:
         return _resp(code=40022, message='MEICAN_NAMESPACE_REQUIRED')
     try:
-        options = _fetch_address_options(namespace, str(acc.access_token or '').strip())
+        options = _fetch_address_options(namespace, str(acc.access_token or '').strip(), acc=acc)
     except Exception as e:
         return _resp(code=50201, message=f'ADDRESS_FETCH_FAILED:{e}')
     meal_slot = _normalize_meal_slot(request.GET.get('mealSlot'))

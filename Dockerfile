@@ -36,8 +36,8 @@ RUN npm install -g npm@latest @qwen-code/qwen-code@latest
 # 构建 Web（Vue/Vite），产物输出到 wxcloudrun/static/web
 RUN cd /app/web && npm install --no-fund --no-audit && npm run build
 
-# 周期任务：每周日 00:05 先生成周推荐，再触发该周午/晚自动订餐任务
-RUN echo "5 0 * * 0 cd /app && /usr/bin/python3 manage.py run_weekly_recommendations --workdays 5 --top-n 3 && /usr/bin/python3 manage.py run_weekly_auto_order_jobs --workdays 5 >> /var/log/cron.log 2>&1" > /etc/crontabs/root
+# 周期任务：每周一 08:00 先生成周推荐，再触发该周午/晚自动订餐任务
+RUN echo "0 8 * * 1 cd /app && /usr/bin/python3 manage.py run_weekly_recommendations --workdays 5 --top-n 3 && /usr/bin/python3 manage.py run_weekly_auto_order_jobs --workdays 5 >> /var/log/cron.log 2>&1" > /etc/crontabs/root
 
 # 暴露端口
 # 此处端口必须与「服务设置」-「流水线」以及「手动上传代码包」部署时填写的端口一致，否则会部署失败。
